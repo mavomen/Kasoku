@@ -1,0 +1,28 @@
+[training]
+model = "gru"            # gru | lstm | tcn
+mode = "eager"           # eager | tf_function | xla
+epochs = 50
+batch_size = 32
+learning_rate = 0.001
+early_stopping_patience = 5
+seed = 42
+window_size = 24
+horizon = 1
+checkpoint_dir = "checkpoints"
+
+[benchmark]
+model = "gru"
+sizes = ["small", "medium"]
+modes = ["eager", "tf_function", "xla"]
+phases = ["train", "inference"]
+iterations = 3
+warmup_iterations = 1
+
+[sink]
+type = "csv"             # csv | json | influxdb
+
+[sink.influxdb]          # only used when sink.type = "influxdb"
+url = "http://localhost:8086"
+token = ""
+org = ""
+bucket = "kasoku"
