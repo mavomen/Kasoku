@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kasoku"
+version = "0.1.0"
+description = "Time-Series Forecasting & XLA Benchmark Platform"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "tensorflow>=2.21",
+    "pandas>=2.2",
+]
+
+[project.scripts]
+kasoku = "kasoku.cli.main:main"
+
+[tool.setuptools.packages.find]
+include = ["kasoku*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9",
+    "pytest-cov>=7",
+    "coverage>=7",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
