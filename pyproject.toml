@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "kasoku"
 version = "0.1.0"
@@ -9,6 +13,9 @@ dependencies = [
     "tensorflow>=2.21",
     "pandas>=2.2",
 ]
+
+[tool.setuptools.packages.find]
+include = ["kasoku*"]
 
 [dependency-groups]
 dev = [
