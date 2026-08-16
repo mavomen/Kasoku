@@ -50,8 +50,9 @@ def build_tcn(
 
     Input shape is ``(None, lookback, 1)`` and output shape ``(None, horizon)``.
     Block ``i`` uses dilation ``dilation_base ** i``. When ``seed`` is given,
-    all random initializers are seeded so that repeated builds with the same
-    seed yield identical weights.
+    all random initializers and the global RNG state are seeded so that
+    repeated builds with the same seed yield identical weights and
+    deterministic training (including dropout RNGs).
     """
     if lookback < 1:
         raise ModelError(f"lookback must be >= 1, got {lookback}")
@@ -67,6 +68,8 @@ def build_tcn(
         raise ModelError(f"dilation_base must be >= 1, got {dilation_base}")
     if not 0.0 <= dropout < 1.0:
         raise ModelError(f"dropout must be in [0, 1), got {dropout}")
+    if seed is not None:
+        tf.keras.utils.set_random_seed(seed)
 
     inputs = tf.keras.Input(shape=(lookback, 1), name="window")
     x = inputs

@@ -31,8 +31,9 @@ def build_gru(
     """Build a GRU forecaster: stacked GRU layers over a Dense head.
 
     Input shape is ``(None, lookback, 1)`` and output shape ``(None, horizon)``.
-    When ``seed`` is given, all random initializers are seeded so that
-    repeated builds with the same seed yield identical weights.
+    When ``seed`` is given, all random initializers and the global RNG state
+    are seeded so that repeated builds with the same seed yield identical
+    weights and deterministic training (including internal dropout RNGs).
     """
     if lookback < 1:
         raise ModelError(f"lookback must be >= 1, got {lookback}")
@@ -42,6 +43,8 @@ def build_gru(
         raise ModelError(f"num_layers must be >= 1, got {num_layers}")
     if hidden_units < 1:
         raise ModelError(f"hidden_units must be >= 1, got {hidden_units}")
+    if seed is not None:
+        tf.keras.utils.set_random_seed(seed)
 
     inputs = tf.keras.Input(shape=(lookback, 1), name="window")
     x = inputs
