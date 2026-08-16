@@ -32,6 +32,7 @@ class ConfigError(ValueError):
 @dataclass
 class TrainingConfig:
     model: str = "gru"
+    size: str = "small"
     mode: str = "eager"
     epochs: int = 50
     batch_size: int = 32
@@ -101,6 +102,7 @@ def parse_config(data: Mapping[str, Any]) -> Config:
 def _parse_training(raw: Any) -> TrainingConfig:
     section = _as_table(raw, "training")
     model = _typed_str(section, "model", TrainingConfig().model)
+    size = _typed_str(section, "size", "small")
     mode = _typed_str(section, "mode", TrainingConfig().mode)
     if model not in VALID_MODELS:
         raise ConfigError(f"training.model must be one of {sorted(VALID_MODELS)}, got {model!r}")
@@ -108,6 +110,7 @@ def _parse_training(raw: Any) -> TrainingConfig:
         raise ConfigError(f"training.mode must be one of {sorted(VALID_MODES)}, got {mode!r}")
     return TrainingConfig(
         model=model,
+        size=size,
         mode=mode,
         epochs=_typed_int(section, "epochs", default=50, minimum=1),
         batch_size=_typed_int(section, "batch_size", default=32, minimum=1),

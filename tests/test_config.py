@@ -17,6 +17,7 @@ def test_load_full_config(tmp_path):
         """
 [training]
 model = "lstm"
+size = "medium"
 mode = "xla"
 epochs = 100
 batch_size = 16
@@ -49,6 +50,7 @@ bucket = "telemetry"
     config = load_config(cfg)
 
     assert config.training.model == "lstm"
+    assert config.training.size == "medium"
     assert config.training.mode == "xla"
     assert config.training.epochs == 100
     assert config.training.batch_size == 16
@@ -79,6 +81,7 @@ def test_empty_config_uses_defaults(tmp_path):
     config = load_config(cfg)
 
     assert config.training.model == "gru"
+    assert config.training.size == "small"
     assert config.training.mode == "eager"
     assert config.training.epochs == 50
     assert config.benchmark.sizes == ["small", "medium"]

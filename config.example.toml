@@ -1,5 +1,6 @@
 [training]
 model = "gru"            # gru | lstm | tcn
+size = "small"           # small | medium
 mode = "eager"           # eager | tf_function | xla
 epochs = 50
 batch_size = 32
