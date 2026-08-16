@@ -16,7 +16,7 @@ from kasoku.execution import (
     resolve_mode,
     xla_call,
 )
-from kasoku.models import build_gru_by_size
+from kasoku.models import build_gru_by_size, build_lstm_by_size
 from kasoku.pipeline import window_series
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
@@ -102,6 +102,18 @@ def test_compile_call_unknown_mode_raises():
 @pytest.mark.parametrize("size", ["small", "medium"])
 def test_gru_equivalent_across_modes_fixture(size):
     model = build_gru_by_size(size, lookback=24, horizon=1, seed=42)
+    x = _windowed_fixture()
+    eager_out = compile_call(model, "eager")(x).numpy()
+    graph_out = compile_call(model, "tf_function")(x).numpy()
+    xla_out = compile_call(model, "xla")(x).numpy()
+    assert eager_out.shape == (x.shape[0], 1)
+    np.testing.assert_allclose(eager_out, graph_out, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(eager_out, xla_out, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("size", ["small", "medium"])
+def test_lstm_equivalent_across_modes_fixture(size):
+    model = build_lstm_by_size(size, lookback=24, horizon=1, seed=42)
     x = _windowed_fixture()
     eager_out = compile_call(model, "eager")(x).numpy()
     graph_out = compile_call(model, "tf_function")(x).numpy()
