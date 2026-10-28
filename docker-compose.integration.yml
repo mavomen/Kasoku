@@ -1,0 +1,6 @@
+services:
+  influxdb:
+    image: influxdb:2.7
+    ports:
+      - "8086"
+    restart: "no"
