@@ -25,6 +25,7 @@ dev = [
     "pytest>=9",
     "pytest-cov>=7",
     "coverage>=7",
+    "influxdb-client>=1.42,<2",
 ]
 
 [tool.pytest.ini_options]
