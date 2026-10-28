@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kasoku"
-version = "0.1.0"
+version = "0.0.1"
 description = "Time-Series Forecasting & XLA Benchmark Platform"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -25,6 +25,7 @@ dev = [
     "pytest>=9",
     "pytest-cov>=7",
     "coverage>=7",
+    "influxdb-client>=1.42,<2",
 ]
 
 [tool.pytest.ini_options]
