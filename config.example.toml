@@ -69,3 +69,9 @@ xla_speedup_ratio = { enabled = true, pct = 10 }   # eager/xla; lower = regressi
 compile_overhead_ratio = { enabled = true, pct = 10 }   # higher = regression
 throughput_ratio = { enabled = true, pct = 10 }   # xla/eager; lower = regression
 memory_ratio = { enabled = true, pct = 10 }   # xla/eager; higher = regression
+
+[accuracy]
+# Forecast accuracy thresholds evaluated against held-out ground truth.
+# A model fails the accuracy check when any enabled metric exceeds its threshold.
+mae = { enabled = true, threshold = 2.0 }      # absolute error
+mape = { enabled = true, threshold = 0.15 }    # 15% percentage error

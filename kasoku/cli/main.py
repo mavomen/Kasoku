@@ -16,6 +16,7 @@ from typing import Sequence
 import pandas as pd
 
 from kasoku.alerts import AlertsError, render_alerts_yaml
+from kasoku.accuracy import AccuracyError, evaluate_accuracy
 from kasoku.baseline import (
     BaselineError,
     compare_baselines,
@@ -49,6 +50,7 @@ _KNOWN_ERRORS = (
     AlertsError,
     SLOError,
     BaselineError,
+    AccuracyError,
     OSError,
 )
 
@@ -85,6 +87,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return _baseline_compare(args)
             if args.baseline_command == "list":
                 return _baseline_list(args)
+        if args.command == "accuracy":
+            if args.accuracy_command == "check":
+                return _accuracy_check(args)
     except _KNOWN_ERRORS as exc:
         print(f"kasoku: error: {exc}", file=sys.stderr)
         return 1
@@ -189,6 +194,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_BASELINE_PATH,
         help=f"baseline JSON path (default: {DEFAULT_BASELINE_PATH})",
     )
+
+    accuracy = subparsers.add_parser("accuracy", help="evaluate forecast accuracy against thresholds")
+    accuracy_sub = accuracy.add_subparsers(dest="accuracy_command", required=True)
+
+    accuracy_check = accuracy_sub.add_parser(
+        "check", help="evaluate forecast accuracy against accuracy thresholds"
+    )
+    accuracy_check.add_argument("--model", required=True, help="trained checkpoint path")
+    accuracy_check.add_argument("--data", required=True, help="input series csv path")
+    accuracy_check.add_argument("--horizon", type=int, required=True, help="forecast steps ahead")
+    accuracy_check.add_argument(
+        "--mode", default=None, help="execution mode (eager|tf_function|xla); default from config"
+    )
+    accuracy_check.add_argument("--config", default=None, help="path to config.toml")
 
     return parser
 
@@ -437,3 +456,41 @@ def _baseline_list(args) -> int:
         parts = ", ".join(f"{k}={v:.4f}" for k, v in sorted(entry.items()))
         print(f"  {key}: {parts}")
     return 0
+
+
+def _accuracy_check(args) -> int:
+    config = _load_config(args)
+    model = load_trained_model(
+        config.training.model,
+        config.training.size,
+        lookback=config.training.window_size,
+        horizon=config.training.horizon,
+        checkpoint_path=args.model,
+        seed=config.training.seed,
+    )
+    df = CsvSource(args.data).read()
+    results = evaluate_accuracy(
+        model,
+        df,
+        args.horizon,
+        args.mode or config.training.mode,
+        config.accuracy,
+    )
+
+    all_ok = results["passed"]
+    status = "PASS" if all_ok else "FAIL"
+    print(f"kasoku accuracy: {status}")
+    for metric_name in ("mae", "mape"):
+        entry = results[metric_name]
+        if not entry["enabled"]:
+            print(f"  {metric_name}: SKIP (disabled)")
+            continue
+        value_str = "N/A" if entry["value"] is None else f"{entry['value']:.4f}"
+        passed_str = "PASS" if entry["passed"] else "FAIL"
+        print(
+            f"  {metric_name}: {passed_str} "
+            f"(value={value_str}, threshold={entry['threshold']:.4f})"
+        )
+        for symbol, value in entry["per_series"].items():
+            print(f"    {symbol}: {value:.4f}")
+    return 0 if all_ok else 1

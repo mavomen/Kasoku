@@ -10,6 +10,8 @@ covers three sections:
 - ``slo``: service level objectives for benchmark performance comparison
 - ``baseline``: per-metric regression thresholds used to compare benchmark
   runs against stored historical baselines
+- ``accuracy``: forecast accuracy thresholds (MAE/MAPE) used to evaluate
+  trained models against held-out ground truth
 
 Sink output is CSV/JSON by default; InfluxDB is an optional, config-driven
 sink and never a hard dependency.
@@ -130,6 +132,22 @@ class BaselineConfig:
 
 
 @dataclass
+class AccuracyTarget:
+    enabled: bool = True
+    threshold: float = 2.0
+
+
+@dataclass
+class AccuracyConfig:
+    mae: AccuracyTarget = field(
+        default_factory=lambda: AccuracyTarget(enabled=True, threshold=2.0)
+    )
+    mape: AccuracyTarget = field(
+        default_factory=lambda: AccuracyTarget(enabled=True, threshold=0.15)
+    )
+
+
+@dataclass
 class AlertRuleConfig:
     enabled: bool = True
     ratio: float | None = None
@@ -160,6 +178,7 @@ class Config:
     alerts: AlertsConfig = field(default_factory=AlertsConfig)
     slo: SLOConfig = field(default_factory=SLOConfig)
     baseline: BaselineConfig = field(default_factory=BaselineConfig)
+    accuracy: AccuracyConfig = field(default_factory=AccuracyConfig)
 
 
 def load_config(path: str | Path) -> Config:
@@ -186,6 +205,7 @@ def parse_config(data: Mapping[str, Any]) -> Config:
         alerts=_parse_alerts(data.get("alerts", {})),
         slo=_parse_slo(data.get("slo", {})),
         baseline=_parse_baseline(data.get("baseline", {})),
+        accuracy=_parse_accuracy(data.get("accuracy", {})),
     )
 
 
@@ -375,6 +395,28 @@ def _parse_baseline_target(
     if pct_val <= 0.0:
         raise ConfigError(f"baseline threshold pct must be > 0, got {pct_val}")
     return BaselineTarget(enabled=enabled_val, pct=pct_val)
+
+
+def _parse_accuracy(raw: Any) -> AccuracyConfig:
+    section = _as_table(raw, "accuracy")
+    return AccuracyConfig(
+        mae=_parse_accuracy_target(section.get("mae", {}), enabled=True, threshold=2.0),
+        mape=_parse_accuracy_target(section.get("mape", {}), enabled=True, threshold=0.15),
+    )
+
+
+def _parse_accuracy_target(
+    raw: Any,
+    *,
+    enabled: bool,
+    threshold: float,
+) -> AccuracyTarget:
+    section = _as_table(raw, "accuracy target")
+    enabled_val = _typed_bool(section, "enabled", enabled)
+    threshold_val = _typed_float(section, "threshold", threshold, minimum=0.0)
+    if threshold_val <= 0.0:
+        raise ConfigError(f"accuracy threshold must be > 0, got {threshold_val}")
+    return AccuracyTarget(enabled=enabled_val, threshold=threshold_val)
 
 
 def _as_table(raw: Any, section: str) -> Mapping[str, Any]:
