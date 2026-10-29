@@ -65,6 +65,9 @@ jobs:
       - name: Evaluate SLOs against benchmark results
         run: uv run kasoku slo check --data /tmp/kasoku-benchmark.csv
 
+      - name: Compare benchmark against stored baselines
+        run: uv run kasoku baseline compare --data /tmp/kasoku-benchmark.csv --baseline benchmarks/baselines.json
+
       - name: Fail build if any Prometheus alert is active
         run: |
           if curl -sf "http://localhost:9090/api/v1/alerts" | grep -q '"state":"active"'; then

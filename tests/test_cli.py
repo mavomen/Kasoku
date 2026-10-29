@@ -304,3 +304,71 @@ def test_main_slo_check_failing_frame(tmp_path, capsys):
 def test_main_slo_check_missing_data_raises_system_exit():
     with pytest.raises(SystemExit):
         main(["slo", "check"])
+
+
+def test_main_baseline_save_and_list(tmp_path):
+    bench_csv = tmp_path / "bench.csv"
+    bench_csv.write_text(
+        "run_id,model,model_size,mode,phase,wall_clock_seconds,throughput_samples_per_sec,compile_overhead_seconds,peak_memory_mb\n"
+        "run-1,gru,small,eager,inference,2.0,10.0,,100.0\n"
+        "run-1,gru,small,xla,inference,1.0,20.0,0.2,105.0\n",
+        encoding="utf-8",
+    )
+    baseline_json = tmp_path / "baselines.json"
+    assert main(["baseline", "save", "--data", str(bench_csv), "--output", str(baseline_json)]) == 0
+    assert baseline_json.exists()
+    out = tmp_path / "list.out"  # not used; list writes to stdout
+    rc = main(["baseline", "list", "--baseline", str(baseline_json)])
+    assert rc == 0
+
+
+def test_main_baseline_compare_passing_frame(tmp_path, capsys):
+    bench_csv = tmp_path / "bench.csv"
+    bench_csv.write_text(
+        "run_id,model,model_size,mode,phase,wall_clock_seconds,throughput_samples_per_sec,compile_overhead_seconds,peak_memory_mb\n"
+        "run-1,gru,small,eager,inference,2.0,10.0,,100.0\n"
+        "run-1,gru,small,xla,inference,1.0,20.0,0.2,105.0\n",
+        encoding="utf-8",
+    )
+    baseline_json = tmp_path / "baselines.json"
+    assert main(["baseline", "save", "--data", str(bench_csv), "--output", str(baseline_json)]) == 0
+    assert main(["baseline", "compare", "--data", str(bench_csv), "--baseline", str(baseline_json)]) == 0
+    out = capsys.readouterr().out
+    assert "kasoku baseline: PASS" in out
+
+
+def test_main_baseline_compare_failing_frame(tmp_path, capsys):
+    good_csv = tmp_path / "good.csv"
+    good_csv.write_text(
+        "run_id,model,model_size,mode,phase,wall_clock_seconds,throughput_samples_per_sec,compile_overhead_seconds,peak_memory_mb\n"
+        "run-1,gru,small,eager,inference,2.0,10.0,,100.0\n"
+        "run-1,gru,small,xla,inference,1.0,20.0,0.2,105.0\n",
+        encoding="utf-8",
+    )
+    regressed = tmp_path / "regressed.csv"
+    regressed.write_text(
+        "run_id,model,model_size,mode,phase,wall_clock_seconds,throughput_samples_per_sec,compile_overhead_seconds,peak_memory_mb\n"
+        "run-1,gru,small,eager,inference,2.0,10.0,,100.0\n"
+        "run-1,gru,small,xla,inference,1.8,5.0,0.5,150.0\n",
+        encoding="utf-8",
+    )
+    baseline_json = tmp_path / "baselines.json"
+    assert main(["baseline", "save", "--data", str(good_csv), "--output", str(baseline_json)]) == 0
+    assert main(["baseline", "compare", "--data", str(regressed), "--baseline", str(baseline_json)]) == 1
+    out = capsys.readouterr().out
+    assert "kasoku baseline: FAIL" in out
+
+
+def test_main_baseline_compare_missing_baseline_passes(tmp_path, capsys):
+    bench_csv = tmp_path / "bench.csv"
+    bench_csv.write_text(
+        "run_id,model,model_size,mode,phase,wall_clock_seconds,throughput_samples_per_sec,compile_overhead_seconds,peak_memory_mb\n"
+        "run-1,gru,small,eager,inference,2.0,10.0,,100.0\n"
+        "run-1,gru,small,xla,inference,1.0,20.0,0.2,105.0\n",
+        encoding="utf-8",
+    )
+    missing = tmp_path / "missing.json"
+    missing.write_text("{}\n", encoding="utf-8")
+    assert main(["baseline", "compare", "--data", str(bench_csv), "--baseline", str(missing)]) == 0
+    out = capsys.readouterr().out
+    assert "kasoku baseline: PASS" in out

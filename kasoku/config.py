@@ -8,6 +8,8 @@ covers three sections:
 - ``sink``: where forecast and benchmark output is written
 - ``alerts``: Prometheus alert rule thresholds and enable/disable flags
 - ``slo``: service level objectives for benchmark performance comparison
+- ``baseline``: per-metric regression thresholds used to compare benchmark
+  runs against stored historical baselines
 
 Sink output is CSV/JSON by default; InfluxDB is an optional, config-driven
 sink and never a hard dependency.
@@ -94,6 +96,40 @@ class SLOConfig:
 
 
 @dataclass
+class BaselineTarget:
+    enabled: bool = True
+    pct: float = 10.0
+
+
+@dataclass
+class BaselineConfig:
+    wall_clock_seconds: BaselineTarget = field(
+        default_factory=lambda: BaselineTarget(enabled=True, pct=10.0)
+    )
+    throughput_samples_per_sec: BaselineTarget = field(
+        default_factory=lambda: BaselineTarget(enabled=True, pct=10.0)
+    )
+    compile_overhead_seconds: BaselineTarget = field(
+        default_factory=lambda: BaselineTarget(enabled=True, pct=20.0)
+    )
+    peak_memory_mb: BaselineTarget = field(
+        default_factory=lambda: BaselineTarget(enabled=True, pct=10.0)
+    )
+    xla_speedup_ratio: BaselineTarget = field(
+        default_factory=lambda: BaselineTarget(enabled=True, pct=10.0)
+    )
+    compile_overhead_ratio: BaselineTarget = field(
+        default_factory=lambda: BaselineTarget(enabled=True, pct=10.0)
+    )
+    throughput_ratio: BaselineTarget = field(
+        default_factory=lambda: BaselineTarget(enabled=True, pct=10.0)
+    )
+    memory_ratio: BaselineTarget = field(
+        default_factory=lambda: BaselineTarget(enabled=True, pct=10.0)
+    )
+
+
+@dataclass
 class AlertRuleConfig:
     enabled: bool = True
     ratio: float | None = None
@@ -123,6 +159,7 @@ class Config:
     sink: SinkConfig = field(default_factory=SinkConfig)
     alerts: AlertsConfig = field(default_factory=AlertsConfig)
     slo: SLOConfig = field(default_factory=SLOConfig)
+    baseline: BaselineConfig = field(default_factory=BaselineConfig)
 
 
 def load_config(path: str | Path) -> Config:
@@ -148,6 +185,7 @@ def parse_config(data: Mapping[str, Any]) -> Config:
         sink=_parse_sink(data.get("sink", {})),
         alerts=_parse_alerts(data.get("alerts", {})),
         slo=_parse_slo(data.get("slo", {})),
+        baseline=_parse_baseline(data.get("baseline", {})),
     )
 
 
@@ -293,6 +331,50 @@ def _parse_slo_target(
     if target_val <= 0.0:
         raise ConfigError(f"slo target must be > 0, got {target_val}")
     return SLOTarget(enabled=enabled_val, target=target_val, operator=operator_val)
+
+
+def _parse_baseline(raw: Any) -> BaselineConfig:
+    section = _as_table(raw, "baseline")
+    return BaselineConfig(
+        wall_clock_seconds=_parse_baseline_target(
+            section.get("wall_clock_seconds", {}), enabled=True, pct=10.0
+        ),
+        throughput_samples_per_sec=_parse_baseline_target(
+            section.get("throughput_samples_per_sec", {}), enabled=True, pct=10.0
+        ),
+        compile_overhead_seconds=_parse_baseline_target(
+            section.get("compile_overhead_seconds", {}), enabled=True, pct=20.0
+        ),
+        peak_memory_mb=_parse_baseline_target(
+            section.get("peak_memory_mb", {}), enabled=True, pct=10.0
+        ),
+        xla_speedup_ratio=_parse_baseline_target(
+            section.get("xla_speedup_ratio", {}), enabled=True, pct=10.0
+        ),
+        compile_overhead_ratio=_parse_baseline_target(
+            section.get("compile_overhead_ratio", {}), enabled=True, pct=10.0
+        ),
+        throughput_ratio=_parse_baseline_target(
+            section.get("throughput_ratio", {}), enabled=True, pct=10.0
+        ),
+        memory_ratio=_parse_baseline_target(
+            section.get("memory_ratio", {}), enabled=True, pct=10.0
+        ),
+    )
+
+
+def _parse_baseline_target(
+    raw: Any,
+    *,
+    enabled: bool,
+    pct: float,
+) -> BaselineTarget:
+    section = _as_table(raw, "baseline target")
+    enabled_val = _typed_bool(section, "enabled", enabled)
+    pct_val = _typed_float(section, "pct", pct, minimum=0.0)
+    if pct_val <= 0.0:
+        raise ConfigError(f"baseline threshold pct must be > 0, got {pct_val}")
+    return BaselineTarget(enabled=enabled_val, pct=pct_val)
 
 
 def _as_table(raw: Any, section: str) -> Mapping[str, Any]:
