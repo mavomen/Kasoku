@@ -22,3 +22,53 @@ jobs:
 
       - name: Run tests with coverage
         run: uv run pytest --cov=kasoku --cov-report=term-missing --cov-report=xml --cov-fail-under=90
+
+  observability:
+    runs-on: ubuntu-latest
+    services:
+      pushgateway:
+        image: prom/pushgateway:v1.8.0
+        ports: ["9091:9091"]
+      prometheus:
+        image: prom/prometheus:v2.54.1
+        ports: ["9090:9090"]
+        volumes: ["./monitoring/prometheus:/etc/prometheus:ro"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python pin 3.13
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Run benchmark smoke test and push metrics to Pushgateway
+        run: |
+          uv run kasoku benchmark \
+            --data fixtures/series_single.csv \
+            --sizes small \
+            --modes eager,tf_function,xla \
+            --phases train,inference \
+            --output /tmp/kasoku-benchmark.csv \
+            --push-gateway http://pushgateway:9091
+
+      - name: Verify Prometheus scraped Pushgateway metrics
+        run: |
+          curl -sf "http://localhost:9090/api/v1/query?query=kasoku_wall_clock_seconds" > /dev/null
+
+      - name: Fail build if any Prometheus alert is active
+        run: |
+          if curl -sf "http://localhost:9090/api/v1/alerts" | grep -q '"state":"active"'; then
+            echo "kasoku: observability: active Prometheus alert detected — benchmark regression, failing build" >&2
+            exit 1
+          fi
+
+      - name: Notify Slack on observability failure
+        if: failure() && secrets.KASOKU_ALERT_WEBHOOK != ''
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+            --data '{"text":"Kasoku observability CI failed: active Prometheus alert on benchmark regression"}' \
+            "${{ secrets.KASOKU_ALERT_WEBHOOK }}"
