@@ -18,6 +18,7 @@ from kasoku.data import CsvSource, DataError
 from kasoku.execution import ExecutionError
 from kasoku.forecast import ForecastError, forecast_series, load_trained_model
 from kasoku.models import ModelError, build_gru_by_size, build_lstm_by_size, build_tcn_by_size
+from kasoku.observability import PushgatewayError, push_benchmark_metrics
 from kasoku.pipeline import PipelineError, window_series
 from kasoku.sinks import CsvSink, InfluxDBSink, JsonSink, SinkError
 from kasoku.train import TrainError, train
@@ -32,6 +33,7 @@ _KNOWN_ERRORS = (
     TrainError,
     BenchmarkError,
     SinkError,
+    PushgatewayError,
     OSError,
 )
 
@@ -88,6 +90,11 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--phases", default=None, help="comma-separated phases (train,inference) (default from config)")
     benchmark.add_argument("--config", default=None, help="path to config.toml")
     benchmark.add_argument("--output", required=True, help="benchmark output path (.csv/.json) or influxdb url")
+    benchmark.add_argument(
+        "--push-gateway",
+        default=None,
+        help="Pushgateway base URL (e.g. http://localhost:9091); pushes benchmark metrics after writing output",
+    )
 
     return parser
 
@@ -207,6 +214,8 @@ def _benchmark(args) -> int:
         warmup_iterations=config.benchmark.warmup_iterations,
     )
     _write_output(frame, config, args.output, kind="benchmark")
+    if args.push_gateway is not None:
+        push_benchmark_metrics(frame, args.push_gateway)
     print(
         f"wrote {len(frame)} benchmark rows ({model_name} x "
         f"{sorted(set(frame['model_size']))}) to {args.output}"
