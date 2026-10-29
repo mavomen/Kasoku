@@ -40,3 +40,16 @@ xla_regression = { enabled = true, multiplier = 1.25 }
 
 # Throughput regression critical: fires when XLA throughput < eager throughput
 throughput_regression = { enabled = true }
+
+[slo]
+# XLA speedup: eager wall-clock / XLA wall-clock >= 1.20 means XLA is 20% faster
+xla_speedup = { enabled = true, target = 1.20, operator = ">=" }
+
+# Compile overhead ratio: compile overhead / XLA wall-clock <= 0.30
+compile_overhead = { enabled = true, target = 0.30, operator = "<=" }
+
+# Throughput ratio: XLA throughput / eager throughput >= 0.90
+throughput_ratio = { enabled = true, target = 0.90, operator = ">=" }
+
+# Memory ratio: XLA peak memory / eager peak memory <= 1.10
+memory_ratio = { enabled = true, target = 1.10, operator = "<=" }

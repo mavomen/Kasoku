@@ -7,6 +7,7 @@ covers three sections:
 - ``benchmark``: sweep dimensions (model sizes, modes, phases) and repetition
 - ``sink``: where forecast and benchmark output is written
 - ``alerts``: Prometheus alert rule thresholds and enable/disable flags
+- ``slo``: service level objectives for benchmark performance comparison
 
 Sink output is CSV/JSON by default; InfluxDB is an optional, config-driven
 sink and never a hard dependency.
@@ -70,6 +71,29 @@ class SinkConfig:
 
 
 @dataclass
+class SLOTarget:
+    enabled: bool = True
+    target: float = 1.0
+    operator: str = ">="
+
+
+@dataclass
+class SLOConfig:
+    xla_speedup: SLOTarget = field(
+        default_factory=lambda: SLOTarget(enabled=True, target=1.20, operator=">=")
+    )
+    compile_overhead: SLOTarget = field(
+        default_factory=lambda: SLOTarget(enabled=True, target=0.30, operator="<=")
+    )
+    throughput_ratio: SLOTarget = field(
+        default_factory=lambda: SLOTarget(enabled=True, target=0.90, operator=">=")
+    )
+    memory_ratio: SLOTarget = field(
+        default_factory=lambda: SLOTarget(enabled=True, target=1.10, operator="<=")
+    )
+
+
+@dataclass
 class AlertRuleConfig:
     enabled: bool = True
     ratio: float | None = None
@@ -98,6 +122,7 @@ class Config:
     benchmark: BenchmarkConfig = field(default_factory=BenchmarkConfig)
     sink: SinkConfig = field(default_factory=SinkConfig)
     alerts: AlertsConfig = field(default_factory=AlertsConfig)
+    slo: SLOConfig = field(default_factory=SLOConfig)
 
 
 def load_config(path: str | Path) -> Config:
@@ -122,6 +147,7 @@ def parse_config(data: Mapping[str, Any]) -> Config:
         benchmark=_parse_benchmark(data.get("benchmark", {})),
         sink=_parse_sink(data.get("sink", {})),
         alerts=_parse_alerts(data.get("alerts", {})),
+        slo=_parse_slo(data.get("slo", {})),
     )
 
 
@@ -229,6 +255,44 @@ def _parse_alert_rule(
     if multiplier_val is not None and multiplier_val <= 0.0:
         raise ConfigError(f"alert rule multiplier must be > 0, got {multiplier_val}")
     return AlertRuleConfig(enabled=enabled_val, ratio=ratio_val, multiplier=multiplier_val)
+
+
+def _parse_slo(raw: Any) -> SLOConfig:
+    section = _as_table(raw, "slo")
+    return SLOConfig(
+        xla_speedup=_parse_slo_target(
+            section.get("xla_speedup", {}), enabled=True, target=1.20, operator=">="
+        ),
+        compile_overhead=_parse_slo_target(
+            section.get("compile_overhead", {}), enabled=True, target=0.30, operator="<="
+        ),
+        throughput_ratio=_parse_slo_target(
+            section.get("throughput_ratio", {}), enabled=True, target=0.90, operator=">="
+        ),
+        memory_ratio=_parse_slo_target(
+            section.get("memory_ratio", {}), enabled=True, target=1.10, operator="<="
+        ),
+    )
+
+
+def _parse_slo_target(
+    raw: Any,
+    *,
+    enabled: bool,
+    target: float,
+    operator: str,
+) -> SLOTarget:
+    section = _as_table(raw, "slo target")
+    enabled_val = _typed_bool(section, "enabled", enabled)
+    target_val = _typed_float(section, "target", target, minimum=0.0)
+    operator_val = _typed_str(section, "operator", operator)
+    if operator_val not in (">=", "<="):
+        raise ConfigError(
+            f"slo target operator must be '>=' or '<=', got {operator_val!r}"
+        )
+    if target_val <= 0.0:
+        raise ConfigError(f"slo target must be > 0, got {target_val}")
+    return SLOTarget(enabled=enabled_val, target=target_val, operator=operator_val)
 
 
 def _as_table(raw: Any, section: str) -> Mapping[str, Any]:

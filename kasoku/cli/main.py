@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+import pandas as pd
+
 from kasoku.alerts import AlertsError, render_alerts_yaml
 from kasoku.benchmark import BenchmarkError, run_benchmark
 from kasoku.config import AlertsConfig, Config, ConfigError, load_config
@@ -23,6 +25,7 @@ from kasoku.models import ModelError, build_gru_by_size, build_lstm_by_size, bui
 from kasoku.observability import PushgatewayError, push_benchmark_metrics
 from kasoku.pipeline import PipelineError, window_series
 from kasoku.sinks import CsvSink, InfluxDBSink, JsonSink, SinkError
+from kasoku.slo import SLOError, all_passed, evaluate_slo
 from kasoku.train import TrainError, train
 
 _KNOWN_ERRORS = (
@@ -37,6 +40,7 @@ _KNOWN_ERRORS = (
     SinkError,
     PushgatewayError,
     AlertsError,
+    SLOError,
     OSError,
 )
 
@@ -63,6 +67,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.alerts_command == "validate":
                 return _alerts_validate(args)
             return _alerts_show(args)
+        if args.command == "slo":
+            if args.slo_command == "check":
+                return _slo_check(args)
     except _KNOWN_ERRORS as exc:
         print(f"kasoku: error: {exc}", file=sys.stderr)
         return 1
@@ -122,6 +129,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     alerts_show = alerts_sub.add_parser("show", help="print resolved alert thresholds")
     alerts_show.add_argument("--config", default=None, help="path to config.toml")
+
+    slo = subparsers.add_parser("slo", help="evaluate service level objectives against benchmark results")
+    slo_sub = slo.add_subparsers(dest="slo_command", required=True)
+
+    slo_check = slo_sub.add_parser("check", help="evaluate SLO targets against a benchmark output CSV")
+    slo_check.add_argument("--config", default=None, help="path to config.toml")
+    slo_check.add_argument(
+        "--data",
+        required=True,
+        help="benchmark results CSV path to evaluate against SLO targets",
+    )
 
     return parser
 
@@ -289,3 +307,24 @@ def _alerts_show(args) -> int:
             parts.append(f"multiplier={rule.multiplier}")
         print(f"{name}: {', '.join(parts)}")
     return 0
+
+
+def _slo_check(args) -> int:
+    config = _load_config(args)
+    df = pd.read_csv(args.data)
+    results = evaluate_slo(df, config.slo)
+    all_ok = all_passed(results)
+    status = "PASS" if all_ok else "FAIL"
+    print(f"kasoku slo: {status}")
+    for name, entry in results.items():
+        value_str = "N/A" if entry["value"] is None else f"{entry['value']:.4f}"
+        passed_str = "PASS" if entry["passed"] else "FAIL"
+        print(
+            f"  {name}: {passed_str} "
+            f"(value={value_str}, target={entry['target']}, op={entry['operator']})"
+        )
+        for combo, combo_result in entry["combos"].items():
+            combo_value = "N/A" if combo_result["value"] is None else f"{combo_result['value']:.4f}"
+            combo_passed = "PASS" if combo_result["passed"] else "FAIL"
+            print(f"    {combo}: {combo_passed} (value={combo_value})")
+    return 0 if all_ok else 1
