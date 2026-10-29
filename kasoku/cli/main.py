@@ -16,6 +16,13 @@ from typing import Sequence
 import pandas as pd
 
 from kasoku.alerts import AlertsError, render_alerts_yaml
+from kasoku.baseline import (
+    BaselineError,
+    compare_baselines,
+    load_baselines,
+    save_baselines,
+    DEFAULT_BASELINE_PATH,
+)
 from kasoku.benchmark import BenchmarkError, run_benchmark
 from kasoku.config import AlertsConfig, Config, ConfigError, load_config
 from kasoku.data import CsvSource, DataError
@@ -41,6 +48,7 @@ _KNOWN_ERRORS = (
     PushgatewayError,
     AlertsError,
     SLOError,
+    BaselineError,
     OSError,
 )
 
@@ -70,6 +78,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "slo":
             if args.slo_command == "check":
                 return _slo_check(args)
+        if args.command == "baseline":
+            if args.baseline_command == "save":
+                return _baseline_save(args)
+            if args.baseline_command == "compare":
+                return _baseline_compare(args)
+            if args.baseline_command == "list":
+                return _baseline_list(args)
     except _KNOWN_ERRORS as exc:
         print(f"kasoku: error: {exc}", file=sys.stderr)
         return 1
@@ -139,6 +154,40 @@ def build_parser() -> argparse.ArgumentParser:
         "--data",
         required=True,
         help="benchmark results CSV path to evaluate against SLO targets",
+    )
+
+    baseline = subparsers.add_parser("baseline", help="track and compare benchmark baselines")
+    baseline_sub = baseline.add_subparsers(dest="baseline_command", required=True)
+
+    baseline_save = baseline_sub.add_parser("save", help="write baseline JSON from a benchmark results CSV")
+    baseline_save.add_argument("--data", required=True, help="benchmark results CSV path")
+    baseline_save.add_argument(
+        "--config",
+        default=None,
+        help="path to config.toml (only used to resolve defaults)",
+    )
+    baseline_save.add_argument(
+        "--output",
+        default=DEFAULT_BASELINE_PATH,
+        help=f"baseline JSON destination (default: {DEFAULT_BASELINE_PATH})",
+    )
+
+    baseline_compare = baseline_sub.add_parser(
+        "compare", help="compare a benchmark CSV against stored baselines"
+    )
+    baseline_compare.add_argument("--data", required=True, help="benchmark results CSV path")
+    baseline_compare.add_argument("--config", default=None, help="path to config.toml")
+    baseline_compare.add_argument(
+        "--baseline",
+        default=DEFAULT_BASELINE_PATH,
+        help=f"baseline JSON path (default: {DEFAULT_BASELINE_PATH})",
+    )
+
+    baseline_list = baseline_sub.add_parser("list", help="print stored baselines")
+    baseline_list.add_argument(
+        "--baseline",
+        default=DEFAULT_BASELINE_PATH,
+        help=f"baseline JSON path (default: {DEFAULT_BASELINE_PATH})",
     )
 
     return parser
@@ -328,3 +377,63 @@ def _slo_check(args) -> int:
             combo_passed = "PASS" if combo_result["passed"] else "FAIL"
             print(f"    {combo}: {combo_passed} (value={combo_value})")
     return 0 if all_ok else 1
+
+
+def _baseline_save(args) -> int:
+    df = pd.read_csv(args.data)
+    baselines = save_baselines(df, args.output)
+    print(
+        f"kasoku baseline: saved {len(baselines)} cell(s) to {args.output}"
+    )
+    return 0
+
+
+def _baseline_compare(args) -> int:
+    config = _load_config(args)
+    df = pd.read_csv(args.data)
+    baselines = load_baselines(args.baseline)
+    results = compare_baselines(df, baselines, config.baseline)
+
+    status = "PASS" if results["passed"] else "FAIL"
+    print(f"kasoku baseline: {status}")
+    if results["missing_baselines"]:
+        print("  no baseline stored for (compared as PASS):")
+        for key in results["missing_baselines"]:
+            print(f"    {key}")
+
+    any_regression = False
+    for key, cell_metrics in results["cells"].items():
+        if not cell_metrics:
+            continue
+        for metric, entry in cell_metrics.items():
+            current = entry["current"]
+            baseline_value = entry["baseline"]
+            pct_change = entry["pct_change"]
+            threshold = entry["threshold"]
+            regression = entry["regression"]
+            current_str = "N/A" if current is None else f"{current:.4f}"
+            baseline_str = "N/A" if baseline_value is None else f"{baseline_value:.4f}"
+            pct_str = "N/A" if pct_change is None else f"{pct_change:+.2f}%"
+            passed_str = "PASS" if regression is False else ("FAIL" if regression is True else "SKIP")
+            print(
+                f"  {key}/{metric}: {passed_str} "
+                f"(current={current_str}, baseline={baseline_str}, "
+                f"change={pct_str}, threshold={threshold}%)"
+            )
+            if regression is True:
+                any_regression = True
+
+    return 1 if any_regression else 0
+
+
+def _baseline_list(args) -> int:
+    baselines = load_baselines(args.baseline)
+    if not baselines:
+        print("kasoku baseline: no baselines stored")
+        return 0
+    print("kasoku baseline: stored cells")
+    for key in sorted(baselines):
+        entry = baselines[key]
+        parts = ", ".join(f"{k}={v:.4f}" for k, v in sorted(entry.items()))
+        print(f"  {key}: {parts}")
+    return 0

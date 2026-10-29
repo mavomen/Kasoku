@@ -53,3 +53,19 @@ throughput_ratio = { enabled = true, target = 0.90, operator = ">=" }
 
 # Memory ratio: XLA peak memory / eager peak memory <= 1.10
 memory_ratio = { enabled = true, target = 1.10, operator = "<=" }
+
+[baseline]
+# Per-metric regression thresholds (percent) when comparing a benchmark run
+# against the stored baseline (benchmarks/baselines.json).
+# A value above baseline * (1 + pct/100) is a regression unless noted.
+
+wall_clock_seconds = { enabled = true, pct = 10 }   # higher = regression
+throughput_samples_per_sec = { enabled = true, pct = 10 }   # lower = regression
+compile_overhead_seconds = { enabled = true, pct = 20 }   # higher = regression (more variable)
+peak_memory_mb = { enabled = true, pct = 10 }   # higher = regression
+
+# Derived SLI ratios (computed xla vs eager within the inference phase).
+xla_speedup_ratio = { enabled = true, pct = 10 }   # eager/xla; lower = regression
+compile_overhead_ratio = { enabled = true, pct = 10 }   # higher = regression
+throughput_ratio = { enabled = true, pct = 10 }   # xla/eager; lower = regression
+memory_ratio = { enabled = true, pct = 10 }   # xla/eager; higher = regression
