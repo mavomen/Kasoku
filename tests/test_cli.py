@@ -273,3 +273,34 @@ def test_main_train_missing_required_args_raises_system_exit():
 def test_cli_reads_fixture_series():
     df = CsvSource(SINGLE).read()
     assert len(df) == 96
+
+
+def test_main_slo_check_passing_frame(tmp_path, capsys):
+    bench_csv = tmp_path / "bench.csv"
+    bench_csv.write_text(
+        "run_id,model,model_size,mode,phase,wall_clock_seconds,throughput_samples_per_sec,compile_overhead_seconds,peak_memory_mb\n"
+        "run-1,gru,small,eager,inference,2.0,10.0,,100.0\n"
+        "run-1,gru,small,xla,inference,1.0,20.0,0.2,105.0\n",
+        encoding="utf-8",
+    )
+    assert main(["slo", "check", "--data", str(bench_csv)]) == 0
+    out = capsys.readouterr().out
+    assert "kasoku slo: PASS" in out
+
+
+def test_main_slo_check_failing_frame(tmp_path, capsys):
+    bench_csv = tmp_path / "bench.csv"
+    bench_csv.write_text(
+        "run_id,model,model_size,mode,phase,wall_clock_seconds,throughput_samples_per_sec,compile_overhead_seconds,peak_memory_mb\n"
+        "run-1,gru,small,eager,inference,2.0,10.0,,100.0\n"
+        "run-1,gru,small,xla,inference,1.8,5.0,0.5,150.0\n",
+        encoding="utf-8",
+    )
+    assert main(["slo", "check", "--data", str(bench_csv)]) == 1
+    out = capsys.readouterr().out
+    assert "kasoku slo: FAIL" in out
+
+
+def test_main_slo_check_missing_data_raises_system_exit():
+    with pytest.raises(SystemExit):
+        main(["slo", "check"])
