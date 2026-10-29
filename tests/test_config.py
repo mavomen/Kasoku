@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from kasoku.config import (
+    AlertsConfig,
     ConfigError,
     load_config,
     parse_config,
@@ -184,3 +185,68 @@ def test_negative_learning_rate_raises():
 def test_bool_not_accepted_as_int():
     with pytest.raises(ConfigError):
         parse_config({"training": {"epochs": True}})
+
+
+def test_alerts_defaults():
+    config = parse_config({})
+    assert config.alerts.xla_no_speedup.enabled is True
+    assert config.alerts.xla_no_speedup.ratio is None
+    assert config.alerts.xla_no_speedup.multiplier is None
+    assert config.alerts.compile_overhead.enabled is True
+    assert config.alerts.compile_overhead.ratio == 0.5
+    assert config.alerts.compile_overhead.multiplier is None
+    assert config.alerts.xla_regression.enabled is True
+    assert config.alerts.xla_regression.multiplier == 1.25
+    assert config.alerts.throughput_regression.enabled is True
+
+
+def test_alerts_partial_section_merge_with_defaults(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[alerts]\nxla_regression = { multiplier = 2.0 }\n', encoding="utf-8")
+    config = load_config(cfg)
+    assert config.alerts.xla_regression.multiplier == 2.0
+    assert config.alerts.compile_overhead.ratio == 0.5
+    assert config.alerts.throughput_regression.enabled is True
+
+
+def test_alerts_load_from_toml(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        """
+[alerts]
+xla_no_speedup = { enabled = false }
+compile_overhead = { enabled = true, ratio = 0.25 }
+xla_regression = { enabled = true, multiplier = 1.5 }
+throughput_regression = { enabled = false }
+""",
+        encoding="utf-8",
+    )
+    config = load_config(cfg)
+    assert config.alerts.xla_no_speedup.enabled is False
+    assert config.alerts.compile_overhead.ratio == 0.25
+    assert config.alerts.xla_regression.multiplier == 1.5
+    assert config.alerts.throughput_regression.enabled is False
+
+
+@pytest.mark.parametrize("ratio", [0, 1.5, -0.1])
+def test_alerts_invalid_ratio_raises(ratio):
+    with pytest.raises(ConfigError):
+        parse_config({"alerts": {"compile_overhead": {"enabled": True, "ratio": ratio}}})
+
+
+def test_alerts_ratio_boundaries():
+    config = parse_config({"alerts": {"compile_overhead": {"enabled": True, "ratio": 0.0001}}})
+    assert config.alerts.compile_overhead.ratio == 0.0001
+    config = parse_config({"alerts": {"compile_overhead": {"enabled": True, "ratio": 1}}})
+    assert config.alerts.compile_overhead.ratio == 1.0
+
+
+@pytest.mark.parametrize("multiplier", [0, -1, -0.5])
+def test_alerts_invalid_multiplier_raises(multiplier):
+    with pytest.raises(ConfigError):
+        parse_config({"alerts": {"xla_regression": {"enabled": True, "multiplier": multiplier}}})
+
+
+def test_alerts_non_table_section_raises():
+    with pytest.raises(ConfigError):
+        parse_config({"alerts": "fast"})

@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 from typing import Sequence
 
+from kasoku.alerts import AlertsError, render_alerts_yaml
 from kasoku.benchmark import BenchmarkError, run_benchmark
-from kasoku.config import Config, ConfigError, load_config
+from kasoku.config import AlertsConfig, Config, ConfigError, load_config
 from kasoku.data import CsvSource, DataError
 from kasoku.execution import ExecutionError
 from kasoku.forecast import ForecastError, forecast_series, load_trained_model
@@ -34,6 +36,7 @@ _KNOWN_ERRORS = (
     BenchmarkError,
     SinkError,
     PushgatewayError,
+    AlertsError,
     OSError,
 )
 
@@ -52,7 +55,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _train(args)
         if args.command == "forecast":
             return _forecast(args)
-        return _benchmark(args)
+        if args.command == "benchmark":
+            return _benchmark(args)
+        if args.command == "alerts":
+            if args.alerts_command == "render":
+                return _alerts_render(args)
+            if args.alerts_command == "validate":
+                return _alerts_validate(args)
+            return _alerts_show(args)
     except _KNOWN_ERRORS as exc:
         print(f"kasoku: error: {exc}", file=sys.stderr)
         return 1
@@ -95,6 +105,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Pushgateway base URL (e.g. http://localhost:9091); pushes benchmark metrics after writing output",
     )
+
+    alerts = subparsers.add_parser("alerts", help="render and validate Prometheus alert rules")
+    alerts_sub = alerts.add_subparsers(dest="alerts_command", required=True)
+
+    alerts_render = alerts_sub.add_parser("render", help="render alert rules YAML from config")
+    alerts_render.add_argument("--config", default=None, help="path to config.toml")
+    alerts_render.add_argument(
+        "--output",
+        default=None,
+        help="write rendered YAML to this file instead of stdout",
+    )
+
+    alerts_validate = alerts_sub.add_parser("validate", help="validate the [alerts] config section")
+    alerts_validate.add_argument("--config", default=None, help="path to config.toml")
+
+    alerts_show = alerts_sub.add_parser("show", help="print resolved alert thresholds")
+    alerts_show.add_argument("--config", default=None, help="path to config.toml")
 
     return parser
 
@@ -220,4 +247,45 @@ def _benchmark(args) -> int:
         f"wrote {len(frame)} benchmark rows ({model_name} x "
         f"{sorted(set(frame['model_size']))}) to {args.output}"
     )
+    return 0
+
+
+def _load_alerts_config(args) -> AlertsConfig:
+    """Load the resolved :class:`AlertsConfig` from config or built-in defaults."""
+    if args.config is None:
+        return Config().alerts
+    return load_config(args.config).alerts
+
+
+def _alerts_render(args) -> int:
+    config = _load_alerts_config(args)
+    yaml_text = render_alerts_yaml(config)
+    if args.output is not None:
+        Path(args.output).write_text(yaml_text, encoding="utf-8")
+    else:
+        print(yaml_text, end="")
+    return 0
+
+
+def _alerts_validate(args) -> int:
+    _load_alerts_config(args)
+    print("kasoku alerts: configuration is valid")
+    return 0
+
+
+def _alerts_show(args) -> int:
+    config = _load_alerts_config(args)
+    rules = (
+        ("xla_no_speedup", config.xla_no_speedup),
+        ("compile_overhead", config.compile_overhead),
+        ("xla_regression", config.xla_regression),
+        ("throughput_regression", config.throughput_regression),
+    )
+    for name, rule in rules:
+        parts = [f"enabled={rule.enabled}"]
+        if rule.ratio is not None:
+            parts.append(f"ratio={rule.ratio}")
+        if rule.multiplier is not None:
+            parts.append(f"multiplier={rule.multiplier}")
+        print(f"{name}: {', '.join(parts)}")
     return 0

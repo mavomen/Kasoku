@@ -27,3 +27,16 @@ url = "http://localhost:8086"
 token = ""
 org = ""
 bucket = "kasoku"
+
+[alerts]
+# XLA no-speedup warning: fires when XLA wall-clock >= eager wall-clock
+xla_no_speedup = { enabled = true }
+
+# Compile overhead warning: fires when compile overhead > ratio * steady-state wall-clock
+compile_overhead = { enabled = true, ratio = 0.5 }
+
+# XLA regression critical: fires when XLA wall-clock > multiplier * eager wall-clock
+xla_regression = { enabled = true, multiplier = 1.25 }
+
+# Throughput regression critical: fires when XLA throughput < eager throughput
+throughput_regression = { enabled = true }
