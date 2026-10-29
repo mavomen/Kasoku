@@ -372,3 +372,130 @@ def test_main_baseline_compare_missing_baseline_passes(tmp_path, capsys):
     assert main(["baseline", "compare", "--data", str(bench_csv), "--baseline", str(missing)]) == 0
     out = capsys.readouterr().out
     assert "kasoku baseline: PASS" in out
+
+
+_ACCURACY_TRAINING = """\
+[training]
+model = "gru"
+size = "small"
+mode = "eager"
+epochs = 2
+batch_size = 16
+seed = 42
+window_size = 8
+horizon = 1
+"""
+
+
+def _accuracy_config(tmp_path, accuracy_section):
+    path = tmp_path / "config.toml"
+    path.write_text(f"{_ACCURACY_TRAINING}\n{accuracy_section}", encoding="utf-8")
+    return str(path)
+
+
+def test_main_accuracy_check_passing(tmp_path, capsys):
+    checkpoint = _train_and_checkpoint(tmp_path)
+    config = _accuracy_config(
+        tmp_path,
+        """
+[accuracy]
+mae = { enabled = true, threshold = 1000.0 }
+mape = { enabled = false }
+""",
+    )
+    output = tmp_path / "forecast.csv"
+    assert (
+        main(
+            [
+                "accuracy",
+                "check",
+                "--model",
+                str(checkpoint),
+                "--data",
+                str(SINGLE),
+                "--horizon",
+                "24",
+                "--config",
+                config,
+            ]
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "kasoku accuracy: PASS" in out
+    assert "mae: PASS" in out
+
+
+def test_main_accuracy_check_failing(tmp_path, capsys):
+    checkpoint = _train_and_checkpoint(tmp_path)
+    config = _accuracy_config(
+        tmp_path,
+        """
+[accuracy]
+mae = { enabled = false }
+mape = { enabled = true, threshold = 0.000001 }
+""",
+    )
+    assert (
+        main(
+            [
+                "accuracy",
+                "check",
+                "--model",
+                str(checkpoint),
+                "--data",
+                str(SINGLE),
+                "--horizon",
+                "24",
+                "--config",
+                config,
+            ]
+        )
+        == 1
+    )
+    out = capsys.readouterr().out
+    assert "kasoku accuracy: FAIL" in out
+
+
+def test_main_accuracy_check_disabled_skipped(tmp_path, capsys):
+    checkpoint = _train_and_checkpoint(tmp_path)
+    config = _accuracy_config(
+        tmp_path,
+        """
+[accuracy]
+mae = { enabled = false }
+mape = { enabled = false }
+""",
+    )
+    assert (
+        main(
+            [
+                "accuracy",
+                "check",
+                "--model",
+                str(checkpoint),
+                "--data",
+                str(SINGLE),
+                "--horizon",
+                "24",
+                "--config",
+                config,
+            ]
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "kasoku accuracy: PASS" in out
+    assert "mae: SKIP (disabled)" in out
+    assert "mape: SKIP (disabled)" in out
+
+
+def test_main_accuracy_check_missing_args_raises_system_exit():
+    with pytest.raises(SystemExit):
+        main(["accuracy", "check"])
+
+
+def test_main_accuracy_unknown_subcommand_raises_system_exit():
+    with pytest.raises(SystemExit):
+        main(["accuracy", "bogus"])
+
