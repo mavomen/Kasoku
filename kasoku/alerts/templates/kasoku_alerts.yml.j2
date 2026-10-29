@@ -1,0 +1,62 @@
+groups:
+  - name: kasoku_alerts
+    rules:
+      {% if alerts.xla_no_speedup.enabled %}
+      - alert: KasokuXlaNoSpeedupWarning
+        expr: >
+          kasoku_wall_clock_seconds{mode="xla", phase="inference"}
+          > ignoring(mode)
+          kasoku_wall_clock_seconds{mode="eager", phase="inference"}
+        for: 0s
+        labels:
+          severity: warning
+        annotations:
+          summary: "XLA inference is not faster than eager ({% raw %}{{ $labels.model }}{% endraw %}/{% raw %}{{ $labels.model_size }}{% endraw %})"
+          description: >
+            XLA inference wall-clock is higher than eager wall-clock;
+            the expected speedup is not realized. Threshold: any slowdown.
+      {% endif %}
+      {% if alerts.compile_overhead.enabled %}
+      - alert: KasokuCompileOverheadWarning
+        expr: >
+          kasoku_compile_overhead_seconds{mode=~"tf_function|xla", phase="inference"}
+          > {{ alerts.compile_overhead.ratio }} * kasoku_wall_clock_seconds{mode=~"tf_function|xla", phase="inference"}
+        for: 0s
+        labels:
+          severity: warning
+        annotations:
+          summary: "High compile overhead for {% raw %}{{ $labels.model }}{% endraw %}/{% raw %}{{ $labels.model_size }}{% endraw %} ({% raw %}{{ $labels.mode }}{% endraw %})"
+          description: >
+            First-call compile overhead exceeds 50% of steady-state
+            inference wall-clock time.
+      {% endif %}
+      {% if alerts.xla_regression.enabled %}
+      - alert: KasokuXlaRegressionCritical
+        expr: >
+          kasoku_wall_clock_seconds{mode="xla", phase="inference"}
+          > ignoring(mode)
+          {{ alerts.xla_regression.multiplier }} * kasoku_wall_clock_seconds{mode="eager", phase="inference"}
+        for: 0s
+        labels:
+          severity: critical
+        annotations:
+          summary: "XLA inference regression: > {{ alerts.xla_regression.multiplier }}x eager wall-clock ({% raw %}{{ $labels.model }}{% endraw %}/{% raw %}{{ $labels.model_size }}{% endraw %})"
+          description: >
+            XLA inference wall-clock is more than {{ alerts.xla_regression.multiplier }}x the eager
+            inference wall-clock. Treat as a performance regression.
+      {% endif %}
+      {% if alerts.throughput_regression.enabled %}
+      - alert: KasokuThroughputRegressionCritical
+        expr: >
+          kasoku_throughput_samples_per_sec{mode="xla", phase="inference"}
+          < ignoring(mode)
+          kasoku_throughput_samples_per_sec{mode="eager", phase="inference"}
+        for: 0s
+        labels:
+          severity: critical
+        annotations:
+          summary: "XLA inference throughput below eager ({% raw %}{{ $labels.model }}{% endraw %}/{% raw %}{{ $labels.model_size }}{% endraw %})"
+          description: >
+            XLA inference throughput is lower than eager inference
+            throughput. Treat as a performance regression.
+      {% endif %}

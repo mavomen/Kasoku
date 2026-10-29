@@ -6,6 +6,7 @@ covers three sections:
 - ``training``: model, execution mode, training hyperparameters
 - ``benchmark``: sweep dimensions (model sizes, modes, phases) and repetition
 - ``sink``: where forecast and benchmark output is written
+- ``alerts``: Prometheus alert rule thresholds and enable/disable flags
 
 Sink output is CSV/JSON by default; InfluxDB is an optional, config-driven
 sink and never a hard dependency.
@@ -69,10 +70,34 @@ class SinkConfig:
 
 
 @dataclass
+class AlertRuleConfig:
+    enabled: bool = True
+    ratio: float | None = None
+    multiplier: float | None = None
+
+
+@dataclass
+class AlertsConfig:
+    xla_no_speedup: AlertRuleConfig = field(
+        default_factory=lambda: AlertRuleConfig(enabled=True)
+    )
+    compile_overhead: AlertRuleConfig = field(
+        default_factory=lambda: AlertRuleConfig(enabled=True, ratio=0.5)
+    )
+    xla_regression: AlertRuleConfig = field(
+        default_factory=lambda: AlertRuleConfig(enabled=True, multiplier=1.25)
+    )
+    throughput_regression: AlertRuleConfig = field(
+        default_factory=lambda: AlertRuleConfig(enabled=True)
+    )
+
+
+@dataclass
 class Config:
     training: TrainingConfig = field(default_factory=TrainingConfig)
     benchmark: BenchmarkConfig = field(default_factory=BenchmarkConfig)
     sink: SinkConfig = field(default_factory=SinkConfig)
+    alerts: AlertsConfig = field(default_factory=AlertsConfig)
 
 
 def load_config(path: str | Path) -> Config:
@@ -96,6 +121,7 @@ def parse_config(data: Mapping[str, Any]) -> Config:
         training=_parse_training(data.get("training", {})),
         benchmark=_parse_benchmark(data.get("benchmark", {})),
         sink=_parse_sink(data.get("sink", {})),
+        alerts=_parse_alerts(data.get("alerts", {})),
     )
 
 
@@ -169,6 +195,42 @@ def _parse_sink(raw: Any) -> SinkConfig:
     return SinkConfig(type=sink_type, influxdb=influx)
 
 
+def _parse_alerts(raw: Any) -> AlertsConfig:
+    section = _as_table(raw, "alerts")
+    return AlertsConfig(
+        xla_no_speedup=_parse_alert_rule(
+            section.get("xla_no_speedup", {}), enabled=True, ratio=None, multiplier=None
+        ),
+        compile_overhead=_parse_alert_rule(
+            section.get("compile_overhead", {}), enabled=True, ratio=0.5, multiplier=None
+        ),
+        xla_regression=_parse_alert_rule(
+            section.get("xla_regression", {}), enabled=True, ratio=None, multiplier=1.25
+        ),
+        throughput_regression=_parse_alert_rule(
+            section.get("throughput_regression", {}), enabled=True, ratio=None, multiplier=None
+        ),
+    )
+
+
+def _parse_alert_rule(
+    raw: Any,
+    *,
+    enabled: bool,
+    ratio: float | None,
+    multiplier: float | None,
+) -> AlertRuleConfig:
+    section = _as_table(raw, "alert rule")
+    enabled_val = _typed_bool(section, "enabled", enabled)
+    ratio_val = _typed_optional_float(section, "ratio", ratio)
+    multiplier_val = _typed_optional_float(section, "multiplier", multiplier)
+    if ratio_val is not None and not (0.0 < ratio_val <= 1.0):
+        raise ConfigError(f"alert rule ratio must be in (0, 1], got {ratio_val}")
+    if multiplier_val is not None and multiplier_val <= 0.0:
+        raise ConfigError(f"alert rule multiplier must be > 0, got {multiplier_val}")
+    return AlertRuleConfig(enabled=enabled_val, ratio=ratio_val, multiplier=multiplier_val)
+
+
 def _as_table(raw: Any, section: str) -> Mapping[str, Any]:
     if not isinstance(raw, Mapping):
         raise ConfigError(f"{section} must be a TOML table, got {type(raw).__name__}")
@@ -206,3 +268,21 @@ def _typed_float(section: Mapping[str, Any], key: str, default: float, minimum: 
     if minimum is not None and value < minimum:
         raise ConfigError(f"{key} must be >= {minimum}, got {value}")
     return value
+
+
+def _typed_bool(section: Mapping[str, Any], key: str, default: bool) -> bool:
+    value = section.get(key, default)
+    if not isinstance(value, bool):
+        raise ConfigError(f"{key} must be a boolean, got {type(value).__name__}")
+    return value
+
+
+def _typed_optional_float(
+    section: Mapping[str, Any], key: str, default: float | None
+) -> float | None:
+    value = section.get(key, default)
+    if value is None:
+        return None
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise ConfigError(f"{key} must be a number, got {type(value).__name__}")
+    return float(value)
