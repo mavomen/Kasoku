@@ -1,0 +1,65 @@
+{
+  "id": null,
+  "uid": "kasoku-benchmark",
+  "title": "Kasoku Benchmark Observability",
+  "timezone": "utc",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Wall-clock seconds by mode",
+      "datasource": {"uid": "prometheus", "type": "prometheus"},
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "kasoku_wall_clock_seconds", "refId": "A", "legendFormat": "{{model}}/{{model_size}} {{mode}} {{phase}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "XLA speedup ratio vs eager",
+      "datasource": {"uid": "prometheus", "type": "prometheus"},
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "kasoku_wall_clock_seconds{mode=\"eager\",phase=\"inference\"} / kasoku_wall_clock_seconds{mode=\"xla\",phase=\"inference\"}", "refId": "A", "legendFormat": "eager/xla {{model}}/{{model_size}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Throughput (samples/sec) by mode",
+      "datasource": {"uid": "prometheus", "type": "prometheus"},
+      "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "kasoku_throughput_samples_per_sec", "refId": "A", "legendFormat": "{{model}}/{{model_size}} {{mode}} {{phase}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Compile overhead seconds",
+      "datasource": {"uid": "prometheus", "type": "prometheus"},
+      "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "kasoku_compile_overhead_seconds", "refId": "A", "legendFormat": "{{model}}/{{model_size}} {{mode}} {{phase}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Peak memory (MB)",
+      "datasource": {"uid": "prometheus", "type": "prometheus"},
+      "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "kasoku_peak_memory_mb", "refId": "A", "legendFormat": "{{model}}/{{model_size}} {{mode}} {{phase}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Benchmark runs over time (run_id)",
+      "datasource": {"uid": "prometheus", "type": "prometheus"},
+      "gridPos": {"x": 12, "y": 16, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "kasoku_benchmark_run", "refId": "A", "legendFormat": "{{run_id}} {{model}}/{{model_size}} {{mode}} {{phase}}"}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+groups:
+  - name: kasoku_alerts
+    rules:
+      - alert: KasokuXlaNoSpeedupWarning
+        expr: >
+          kasoku_wall_clock_seconds{mode="xla", phase="inference"}
+          > ignoring(mode)
+          kasoku_wall_clock_seconds{mode="eager", phase="inference"}
+        for: 0s
+        labels:
+          severity: warning
+        annotations:
+          summary: "XLA inference is not faster than eager ({{ $labels.model }}/{{ $labels.model_size }})"
+          description: >
+            XLA inference wall-clock is higher than eager wall-clock;
+            the expected speedup is not realized. Threshold: any slowdown.
+
+      - alert: KasokuCompileOverheadWarning
+        expr: >
+          kasoku_compile_overhead_seconds{mode=~"tf_function|xla", phase="inference"}
+          > 0.5 * kasoku_wall_clock_seconds{mode=~"tf_function|xla", phase="inference"}
+        for: 0s
+        labels:
+          severity: warning
+        annotations:
+          summary: "High compile overhead for {{ $labels.model }}/{{ $labels.model_size }} ({{ $labels.mode }})"
+          description: >
+            First-call compile overhead exceeds 50% of steady-state
+            inference wall-clock time.
+
+      - alert: KasokuXlaRegressionCritical
+        expr: >
+          kasoku_wall_clock_seconds{mode="xla", phase="inference"}
+          > ignoring(mode)
+          1.25 * kasoku_wall_clock_seconds{mode="eager", phase="inference"}
+        for: 0s
+        labels:
+          severity: critical
+        annotations:
+          summary: "XLA inference regression: > 1.25x eager wall-clock ({{ $labels.model }}/{{ $labels.model_size }})"
+          description: >
+            XLA inference wall-clock is more than 1.25x the eager
+            inference wall-clock. Treat as a performance regression.
+
+      - alert: KasokuThroughputRegressionCritical
+        expr: >
+          kasoku_throughput_samples_per_sec{mode="xla", phase="inference"}
+          < ignoring(mode)
+          kasoku_throughput_samples_per_sec{mode="eager", phase="inference"}
+        for: 0s
+        labels:
+          severity: critical
+        annotations:
+          summary: "XLA inference throughput below eager ({{ $labels.model }}/{{ $labels.model_size }})"
+          description: >
+            XLA inference throughput is lower than eager inference
+            throughput. Treat as a performance regression.

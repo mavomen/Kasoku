@@ -22,3 +22,88 @@ jobs:
 
       - name: Run tests with coverage
         run: uv run pytest --cov=kasoku --cov-report=term-missing --cov-report=xml --cov-fail-under=90
+
+  observability:
+    runs-on: ubuntu-latest
+    services:
+      pushgateway:
+        image: prom/pushgateway:v1.8.0
+        ports: ["9091:9091"]
+      prometheus:
+        image: prom/prometheus:v2.54.1
+        ports: ["9090:9090"]
+        volumes: ["./monitoring/prometheus:/etc/prometheus:ro"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python pin 3.13
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Render Prometheus alert rules from config
+        run: uv run kasoku alerts render --output monitoring/prometheus/rules/kasoku_alerts.yml
+
+      - name: Run benchmark smoke test and push metrics to Pushgateway
+        run: |
+          uv run kasoku benchmark \
+            --data fixtures/series_single.csv \
+            --sizes small \
+            --modes eager,tf_function,xla \
+            --phases train,inference \
+            --output /tmp/kasoku-benchmark.csv \
+            --push-gateway http://pushgateway:9091
+
+      - name: Verify Prometheus scraped Pushgateway metrics
+        run: |
+          curl -sf "http://localhost:9090/api/v1/query?query=kasoku_wall_clock_seconds" > /dev/null
+
+      - name: Evaluate SLOs against benchmark results
+        run: uv run kasoku slo check --data /tmp/kasoku-benchmark.csv
+
+      - name: Compare benchmark against stored baselines
+        run: uv run kasoku baseline compare --data /tmp/kasoku-benchmark.csv --baseline benchmarks/baselines.json
+
+      - name: Train model for accuracy evaluation
+        run: |
+          cat > /tmp/kasoku-accuracy-config.toml <<'EOF'
+[training]
+model = "gru"
+size = "small"
+mode = "eager"
+epochs = 5
+batch_size = 16
+seed = 42
+window_size = 8
+horizon = 1
+checkpoint_dir = "checkpoints"
+
+[accuracy]
+mae = { enabled = true, threshold = 10.0 }
+mape = { enabled = true, threshold = 1.0 }
+EOF
+          uv run kasoku train \
+            --data fixtures/series_single.csv \
+            --config /tmp/kasoku-accuracy-config.toml \
+            --output /tmp/model.ckpt
+
+      - name: Evaluate forecast accuracy
+        run: uv run kasoku accuracy check --model /tmp/model.ckpt --data fixtures/series_single.csv --horizon 24 --config /tmp/kasoku-accuracy-config.toml
+
+      - name: Fail build if any Prometheus alert is active
+        run: |
+          if curl -sf "http://localhost:9090/api/v1/alerts" | grep -q '"state":"active"'; then
+            echo "kasoku: observability: active Prometheus alert detected — benchmark regression, failing build" >&2
+            exit 1
+          fi
+
+      - name: Notify Slack on observability failure
+        if: failure() && secrets.KASOKU_ALERT_WEBHOOK != ''
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+            --data '{"text":"Kasoku observability CI failed: active Prometheus alert on benchmark regression"}' \
+            "${{ secrets.KASOKU_ALERT_WEBHOOK }}"

@@ -6,6 +6,12 @@ covers three sections:
 - ``training``: model, execution mode, training hyperparameters
 - ``benchmark``: sweep dimensions (model sizes, modes, phases) and repetition
 - ``sink``: where forecast and benchmark output is written
+- ``alerts``: Prometheus alert rule thresholds and enable/disable flags
+- ``slo``: service level objectives for benchmark performance comparison
+- ``baseline``: per-metric regression thresholds used to compare benchmark
+  runs against stored historical baselines
+- ``accuracy``: forecast accuracy thresholds (MAE/MAPE) used to evaluate
+  trained models against held-out ground truth
 
 Sink output is CSV/JSON by default; InfluxDB is an optional, config-driven
 sink and never a hard dependency.
@@ -69,10 +75,110 @@ class SinkConfig:
 
 
 @dataclass
+class SLOTarget:
+    enabled: bool = True
+    target: float = 1.0
+    operator: str = ">="
+
+
+@dataclass
+class SLOConfig:
+    xla_speedup: SLOTarget = field(
+        default_factory=lambda: SLOTarget(enabled=True, target=1.20, operator=">=")
+    )
+    compile_overhead: SLOTarget = field(
+        default_factory=lambda: SLOTarget(enabled=True, target=0.30, operator="<=")
+    )
+    throughput_ratio: SLOTarget = field(
+        default_factory=lambda: SLOTarget(enabled=True, target=0.90, operator=">=")
+    )
+    memory_ratio: SLOTarget = field(
+        default_factory=lambda: SLOTarget(enabled=True, target=1.10, operator="<=")
+    )
+
+
+@dataclass
+class BaselineTarget:
+    enabled: bool = True
+    pct: float = 10.0
+
+
+@dataclass
+class BaselineConfig:
+    wall_clock_seconds: BaselineTarget = field(
+        default_factory=lambda: BaselineTarget(enabled=True, pct=10.0)
+    )
+    throughput_samples_per_sec: BaselineTarget = field(
+        default_factory=lambda: BaselineTarget(enabled=True, pct=10.0)
+    )
+    compile_overhead_seconds: BaselineTarget = field(
+        default_factory=lambda: BaselineTarget(enabled=True, pct=20.0)
+    )
+    peak_memory_mb: BaselineTarget = field(
+        default_factory=lambda: BaselineTarget(enabled=True, pct=10.0)
+    )
+    xla_speedup_ratio: BaselineTarget = field(
+        default_factory=lambda: BaselineTarget(enabled=True, pct=10.0)
+    )
+    compile_overhead_ratio: BaselineTarget = field(
+        default_factory=lambda: BaselineTarget(enabled=True, pct=10.0)
+    )
+    throughput_ratio: BaselineTarget = field(
+        default_factory=lambda: BaselineTarget(enabled=True, pct=10.0)
+    )
+    memory_ratio: BaselineTarget = field(
+        default_factory=lambda: BaselineTarget(enabled=True, pct=10.0)
+    )
+
+
+@dataclass
+class AccuracyTarget:
+    enabled: bool = True
+    threshold: float = 2.0
+
+
+@dataclass
+class AccuracyConfig:
+    mae: AccuracyTarget = field(
+        default_factory=lambda: AccuracyTarget(enabled=True, threshold=2.0)
+    )
+    mape: AccuracyTarget = field(
+        default_factory=lambda: AccuracyTarget(enabled=True, threshold=0.15)
+    )
+
+
+@dataclass
+class AlertRuleConfig:
+    enabled: bool = True
+    ratio: float | None = None
+    multiplier: float | None = None
+
+
+@dataclass
+class AlertsConfig:
+    xla_no_speedup: AlertRuleConfig = field(
+        default_factory=lambda: AlertRuleConfig(enabled=True)
+    )
+    compile_overhead: AlertRuleConfig = field(
+        default_factory=lambda: AlertRuleConfig(enabled=True, ratio=0.5)
+    )
+    xla_regression: AlertRuleConfig = field(
+        default_factory=lambda: AlertRuleConfig(enabled=True, multiplier=1.25)
+    )
+    throughput_regression: AlertRuleConfig = field(
+        default_factory=lambda: AlertRuleConfig(enabled=True)
+    )
+
+
+@dataclass
 class Config:
     training: TrainingConfig = field(default_factory=TrainingConfig)
     benchmark: BenchmarkConfig = field(default_factory=BenchmarkConfig)
     sink: SinkConfig = field(default_factory=SinkConfig)
+    alerts: AlertsConfig = field(default_factory=AlertsConfig)
+    slo: SLOConfig = field(default_factory=SLOConfig)
+    baseline: BaselineConfig = field(default_factory=BaselineConfig)
+    accuracy: AccuracyConfig = field(default_factory=AccuracyConfig)
 
 
 def load_config(path: str | Path) -> Config:
@@ -96,6 +202,10 @@ def parse_config(data: Mapping[str, Any]) -> Config:
         training=_parse_training(data.get("training", {})),
         benchmark=_parse_benchmark(data.get("benchmark", {})),
         sink=_parse_sink(data.get("sink", {})),
+        alerts=_parse_alerts(data.get("alerts", {})),
+        slo=_parse_slo(data.get("slo", {})),
+        baseline=_parse_baseline(data.get("baseline", {})),
+        accuracy=_parse_accuracy(data.get("accuracy", {})),
     )
 
 
@@ -169,6 +279,146 @@ def _parse_sink(raw: Any) -> SinkConfig:
     return SinkConfig(type=sink_type, influxdb=influx)
 
 
+def _parse_alerts(raw: Any) -> AlertsConfig:
+    section = _as_table(raw, "alerts")
+    return AlertsConfig(
+        xla_no_speedup=_parse_alert_rule(
+            section.get("xla_no_speedup", {}), enabled=True, ratio=None, multiplier=None
+        ),
+        compile_overhead=_parse_alert_rule(
+            section.get("compile_overhead", {}), enabled=True, ratio=0.5, multiplier=None
+        ),
+        xla_regression=_parse_alert_rule(
+            section.get("xla_regression", {}), enabled=True, ratio=None, multiplier=1.25
+        ),
+        throughput_regression=_parse_alert_rule(
+            section.get("throughput_regression", {}), enabled=True, ratio=None, multiplier=None
+        ),
+    )
+
+
+def _parse_alert_rule(
+    raw: Any,
+    *,
+    enabled: bool,
+    ratio: float | None,
+    multiplier: float | None,
+) -> AlertRuleConfig:
+    section = _as_table(raw, "alert rule")
+    enabled_val = _typed_bool(section, "enabled", enabled)
+    ratio_val = _typed_optional_float(section, "ratio", ratio)
+    multiplier_val = _typed_optional_float(section, "multiplier", multiplier)
+    if ratio_val is not None and not (0.0 < ratio_val <= 1.0):
+        raise ConfigError(f"alert rule ratio must be in (0, 1], got {ratio_val}")
+    if multiplier_val is not None and multiplier_val <= 0.0:
+        raise ConfigError(f"alert rule multiplier must be > 0, got {multiplier_val}")
+    return AlertRuleConfig(enabled=enabled_val, ratio=ratio_val, multiplier=multiplier_val)
+
+
+def _parse_slo(raw: Any) -> SLOConfig:
+    section = _as_table(raw, "slo")
+    return SLOConfig(
+        xla_speedup=_parse_slo_target(
+            section.get("xla_speedup", {}), enabled=True, target=1.20, operator=">="
+        ),
+        compile_overhead=_parse_slo_target(
+            section.get("compile_overhead", {}), enabled=True, target=0.30, operator="<="
+        ),
+        throughput_ratio=_parse_slo_target(
+            section.get("throughput_ratio", {}), enabled=True, target=0.90, operator=">="
+        ),
+        memory_ratio=_parse_slo_target(
+            section.get("memory_ratio", {}), enabled=True, target=1.10, operator="<="
+        ),
+    )
+
+
+def _parse_slo_target(
+    raw: Any,
+    *,
+    enabled: bool,
+    target: float,
+    operator: str,
+) -> SLOTarget:
+    section = _as_table(raw, "slo target")
+    enabled_val = _typed_bool(section, "enabled", enabled)
+    target_val = _typed_float(section, "target", target, minimum=0.0)
+    operator_val = _typed_str(section, "operator", operator)
+    if operator_val not in (">=", "<="):
+        raise ConfigError(
+            f"slo target operator must be '>=' or '<=', got {operator_val!r}"
+        )
+    if target_val <= 0.0:
+        raise ConfigError(f"slo target must be > 0, got {target_val}")
+    return SLOTarget(enabled=enabled_val, target=target_val, operator=operator_val)
+
+
+def _parse_baseline(raw: Any) -> BaselineConfig:
+    section = _as_table(raw, "baseline")
+    return BaselineConfig(
+        wall_clock_seconds=_parse_baseline_target(
+            section.get("wall_clock_seconds", {}), enabled=True, pct=10.0
+        ),
+        throughput_samples_per_sec=_parse_baseline_target(
+            section.get("throughput_samples_per_sec", {}), enabled=True, pct=10.0
+        ),
+        compile_overhead_seconds=_parse_baseline_target(
+            section.get("compile_overhead_seconds", {}), enabled=True, pct=20.0
+        ),
+        peak_memory_mb=_parse_baseline_target(
+            section.get("peak_memory_mb", {}), enabled=True, pct=10.0
+        ),
+        xla_speedup_ratio=_parse_baseline_target(
+            section.get("xla_speedup_ratio", {}), enabled=True, pct=10.0
+        ),
+        compile_overhead_ratio=_parse_baseline_target(
+            section.get("compile_overhead_ratio", {}), enabled=True, pct=10.0
+        ),
+        throughput_ratio=_parse_baseline_target(
+            section.get("throughput_ratio", {}), enabled=True, pct=10.0
+        ),
+        memory_ratio=_parse_baseline_target(
+            section.get("memory_ratio", {}), enabled=True, pct=10.0
+        ),
+    )
+
+
+def _parse_baseline_target(
+    raw: Any,
+    *,
+    enabled: bool,
+    pct: float,
+) -> BaselineTarget:
+    section = _as_table(raw, "baseline target")
+    enabled_val = _typed_bool(section, "enabled", enabled)
+    pct_val = _typed_float(section, "pct", pct, minimum=0.0)
+    if pct_val <= 0.0:
+        raise ConfigError(f"baseline threshold pct must be > 0, got {pct_val}")
+    return BaselineTarget(enabled=enabled_val, pct=pct_val)
+
+
+def _parse_accuracy(raw: Any) -> AccuracyConfig:
+    section = _as_table(raw, "accuracy")
+    return AccuracyConfig(
+        mae=_parse_accuracy_target(section.get("mae", {}), enabled=True, threshold=2.0),
+        mape=_parse_accuracy_target(section.get("mape", {}), enabled=True, threshold=0.15),
+    )
+
+
+def _parse_accuracy_target(
+    raw: Any,
+    *,
+    enabled: bool,
+    threshold: float,
+) -> AccuracyTarget:
+    section = _as_table(raw, "accuracy target")
+    enabled_val = _typed_bool(section, "enabled", enabled)
+    threshold_val = _typed_float(section, "threshold", threshold, minimum=0.0)
+    if threshold_val <= 0.0:
+        raise ConfigError(f"accuracy threshold must be > 0, got {threshold_val}")
+    return AccuracyTarget(enabled=enabled_val, threshold=threshold_val)
+
+
 def _as_table(raw: Any, section: str) -> Mapping[str, Any]:
     if not isinstance(raw, Mapping):
         raise ConfigError(f"{section} must be a TOML table, got {type(raw).__name__}")
@@ -206,3 +456,21 @@ def _typed_float(section: Mapping[str, Any], key: str, default: float, minimum: 
     if minimum is not None and value < minimum:
         raise ConfigError(f"{key} must be >= {minimum}, got {value}")
     return value
+
+
+def _typed_bool(section: Mapping[str, Any], key: str, default: bool) -> bool:
+    value = section.get(key, default)
+    if not isinstance(value, bool):
+        raise ConfigError(f"{key} must be a boolean, got {type(value).__name__}")
+    return value
+
+
+def _typed_optional_float(
+    section: Mapping[str, Any], key: str, default: float | None
+) -> float | None:
+    value = section.get(key, default)
+    if value is None:
+        return None
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise ConfigError(f"{key} must be a number, got {type(value).__name__}")
+    return float(value)

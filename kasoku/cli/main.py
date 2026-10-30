@@ -10,16 +10,31 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 from typing import Sequence
 
+import pandas as pd
+
+from kasoku.alerts import AlertsError, render_alerts_yaml
+from kasoku.accuracy import AccuracyError, evaluate_accuracy, save_accuracy_json
+from kasoku.baseline import (
+    BaselineError,
+    compare_baselines,
+    load_baselines,
+    save_baselines,
+    DEFAULT_BASELINE_PATH,
+)
 from kasoku.benchmark import BenchmarkError, run_benchmark
-from kasoku.config import Config, ConfigError, load_config
+from kasoku.config import AlertsConfig, Config, ConfigError, load_config
 from kasoku.data import CsvSource, DataError
 from kasoku.execution import ExecutionError
 from kasoku.forecast import ForecastError, forecast_series, load_trained_model
 from kasoku.models import ModelError, build_gru_by_size, build_lstm_by_size, build_tcn_by_size
+from kasoku.observability import PushgatewayError, push_benchmark_metrics
 from kasoku.pipeline import PipelineError, window_series
+from kasoku.report import ReportError, generate_report
 from kasoku.sinks import CsvSink, InfluxDBSink, JsonSink, SinkError
+from kasoku.slo import SLOError, all_passed, evaluate_slo
 from kasoku.train import TrainError, train
 
 _KNOWN_ERRORS = (
@@ -32,6 +47,12 @@ _KNOWN_ERRORS = (
     TrainError,
     BenchmarkError,
     SinkError,
+    PushgatewayError,
+    AlertsError,
+    SLOError,
+    BaselineError,
+    AccuracyError,
+    ReportError,
     OSError,
 )
 
@@ -50,7 +71,32 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _train(args)
         if args.command == "forecast":
             return _forecast(args)
-        return _benchmark(args)
+        if args.command == "benchmark":
+            return _benchmark(args)
+        if args.command == "alerts":
+            if args.alerts_command == "render":
+                return _alerts_render(args)
+            if args.alerts_command == "validate":
+                return _alerts_validate(args)
+            return _alerts_show(args)
+        if args.command == "slo":
+            if args.slo_command == "check":
+                return _slo_check(args)
+        if args.command == "baseline":
+            if args.baseline_command == "save":
+                return _baseline_save(args)
+            if args.baseline_command == "compare":
+                return _baseline_compare(args)
+            if args.baseline_command == "list":
+                return _baseline_list(args)
+        if args.command == "accuracy":
+            if args.accuracy_command == "check":
+                return _accuracy_check(args)
+        if args.command == "report":
+            if args.report_command == "generate":
+                return _report_generate(args)
+            if args.report_command == "watch":
+                return _report_watch(args)
     except _KNOWN_ERRORS as exc:
         print(f"kasoku: error: {exc}", file=sys.stderr)
         return 1
@@ -88,6 +134,120 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--phases", default=None, help="comma-separated phases (train,inference) (default from config)")
     benchmark.add_argument("--config", default=None, help="path to config.toml")
     benchmark.add_argument("--output", required=True, help="benchmark output path (.csv/.json) or influxdb url")
+    benchmark.add_argument(
+        "--push-gateway",
+        default=None,
+        help="Pushgateway base URL (e.g. http://localhost:9091); pushes benchmark metrics after writing output",
+    )
+
+    alerts = subparsers.add_parser("alerts", help="render and validate Prometheus alert rules")
+    alerts_sub = alerts.add_subparsers(dest="alerts_command", required=True)
+
+    alerts_render = alerts_sub.add_parser("render", help="render alert rules YAML from config")
+    alerts_render.add_argument("--config", default=None, help="path to config.toml")
+    alerts_render.add_argument(
+        "--output",
+        default=None,
+        help="write rendered YAML to this file instead of stdout",
+    )
+
+    alerts_validate = alerts_sub.add_parser("validate", help="validate the [alerts] config section")
+    alerts_validate.add_argument("--config", default=None, help="path to config.toml")
+
+    alerts_show = alerts_sub.add_parser("show", help="print resolved alert thresholds")
+    alerts_show.add_argument("--config", default=None, help="path to config.toml")
+
+    slo = subparsers.add_parser("slo", help="evaluate service level objectives against benchmark results")
+    slo_sub = slo.add_subparsers(dest="slo_command", required=True)
+
+    slo_check = slo_sub.add_parser("check", help="evaluate SLO targets against a benchmark output CSV")
+    slo_check.add_argument("--config", default=None, help="path to config.toml")
+    slo_check.add_argument(
+        "--data",
+        required=True,
+        help="benchmark results CSV path to evaluate against SLO targets",
+    )
+
+    baseline = subparsers.add_parser("baseline", help="track and compare benchmark baselines")
+    baseline_sub = baseline.add_subparsers(dest="baseline_command", required=True)
+
+    baseline_save = baseline_sub.add_parser("save", help="write baseline JSON from a benchmark results CSV")
+    baseline_save.add_argument("--data", required=True, help="benchmark results CSV path")
+    baseline_save.add_argument(
+        "--config",
+        default=None,
+        help="path to config.toml (only used to resolve defaults)",
+    )
+    baseline_save.add_argument(
+        "--output",
+        default=DEFAULT_BASELINE_PATH,
+        help=f"baseline JSON destination (default: {DEFAULT_BASELINE_PATH})",
+    )
+
+    baseline_compare = baseline_sub.add_parser(
+        "compare", help="compare a benchmark CSV against stored baselines"
+    )
+    baseline_compare.add_argument("--data", required=True, help="benchmark results CSV path")
+    baseline_compare.add_argument("--config", default=None, help="path to config.toml")
+    baseline_compare.add_argument(
+        "--baseline",
+        default=DEFAULT_BASELINE_PATH,
+        help=f"baseline JSON path (default: {DEFAULT_BASELINE_PATH})",
+    )
+
+    baseline_list = baseline_sub.add_parser("list", help="print stored baselines")
+    baseline_list.add_argument(
+        "--baseline",
+        default=DEFAULT_BASELINE_PATH,
+        help=f"baseline JSON path (default: {DEFAULT_BASELINE_PATH})",
+    )
+
+    accuracy = subparsers.add_parser("accuracy", help="evaluate forecast accuracy against thresholds")
+    accuracy_sub = accuracy.add_subparsers(dest="accuracy_command", required=True)
+
+    accuracy_check = accuracy_sub.add_parser(
+        "check", help="evaluate forecast accuracy against accuracy thresholds"
+    )
+    accuracy_check.add_argument("--model", required=True, help="trained checkpoint path")
+    accuracy_check.add_argument("--data", required=True, help="input series csv path")
+    accuracy_check.add_argument("--horizon", type=int, required=True, help="forecast steps ahead")
+    accuracy_check.add_argument(
+        "--mode", default=None, help="execution mode (eager|tf_function|xla); default from config"
+    )
+    accuracy_check.add_argument("--config", default=None, help="path to config.toml")
+    accuracy_check.add_argument(
+        "--output",
+        default=None,
+        help="write accuracy results JSON to this path for use with 'kasoku report generate --accuracy'",
+    )
+
+    report = subparsers.add_parser("report", help="generate interactive HTML benchmark reports")
+    report_sub = report.add_subparsers(dest="report_command", required=True)
+
+    report_generate = report_sub.add_parser("generate", help="generate a self-contained HTML benchmark report")
+    report_generate.add_argument("--data", required=True, help="benchmark results .csv/.json or InfluxDB URL")
+    report_generate.add_argument("--output", required=True, help="HTML report destination path")
+    report_generate.add_argument("--compare", default=None, help="second benchmark file for comparison")
+    report_generate.add_argument("--config", default=None, help="path to config.toml")
+    report_generate.add_argument("--time-range", default="-24h", help="InfluxDB query time range (default: -24h)")
+    report_generate.add_argument(
+        "--accuracy",
+        default=None,
+        help="accuracy results JSON from 'kasoku accuracy check --output' to render MAE/MAPE charts",
+    )
+    report_generate.add_argument(
+        "--compare-accuracy",
+        default=None,
+        help="second accuracy results JSON for side-by-side accuracy comparison",
+    )
+
+    report_watch = report_sub.add_parser("watch", help="watch a benchmark file and regenerate the report on change")
+    report_watch.add_argument("--data", required=True, help="benchmark results .csv/.json or InfluxDB URL")
+    report_watch.add_argument("--output", required=True, help="HTML report destination path")
+    report_watch.add_argument("--compare", default=None, help="second benchmark file for comparison")
+    report_watch.add_argument("--config", default=None, help="path to config.toml")
+    report_watch.add_argument("--time-range", default="-24h", help="InfluxDB query time range (default: -24h)")
+    report_watch.add_argument("--interval", type=int, default=5, help="poll interval seconds (default: 5)")
 
     return parser
 
@@ -207,8 +367,203 @@ def _benchmark(args) -> int:
         warmup_iterations=config.benchmark.warmup_iterations,
     )
     _write_output(frame, config, args.output, kind="benchmark")
+    if args.push_gateway is not None:
+        push_benchmark_metrics(frame, args.push_gateway)
     print(
         f"wrote {len(frame)} benchmark rows ({model_name} x "
         f"{sorted(set(frame['model_size']))}) to {args.output}"
+    )
+    return 0
+
+
+def _load_alerts_config(args) -> AlertsConfig:
+    """Load the resolved :class:`AlertsConfig` from config or built-in defaults."""
+    if args.config is None:
+        return Config().alerts
+    return load_config(args.config).alerts
+
+
+def _alerts_render(args) -> int:
+    config = _load_alerts_config(args)
+    yaml_text = render_alerts_yaml(config)
+    if args.output is not None:
+        Path(args.output).write_text(yaml_text, encoding="utf-8")
+    else:
+        print(yaml_text, end="")
+    return 0
+
+
+def _alerts_validate(args) -> int:
+    _load_alerts_config(args)
+    print("kasoku alerts: configuration is valid")
+    return 0
+
+
+def _alerts_show(args) -> int:
+    config = _load_alerts_config(args)
+    rules = (
+        ("xla_no_speedup", config.xla_no_speedup),
+        ("compile_overhead", config.compile_overhead),
+        ("xla_regression", config.xla_regression),
+        ("throughput_regression", config.throughput_regression),
+    )
+    for name, rule in rules:
+        parts = [f"enabled={rule.enabled}"]
+        if rule.ratio is not None:
+            parts.append(f"ratio={rule.ratio}")
+        if rule.multiplier is not None:
+            parts.append(f"multiplier={rule.multiplier}")
+        print(f"{name}: {', '.join(parts)}")
+    return 0
+
+
+def _slo_check(args) -> int:
+    config = _load_config(args)
+    df = pd.read_csv(args.data)
+    results = evaluate_slo(df, config.slo)
+    all_ok = all_passed(results)
+    status = "PASS" if all_ok else "FAIL"
+    print(f"kasoku slo: {status}")
+    for name, entry in results.items():
+        value_str = "N/A" if entry["value"] is None else f"{entry['value']:.4f}"
+        passed_str = "PASS" if entry["passed"] else "FAIL"
+        print(
+            f"  {name}: {passed_str} "
+            f"(value={value_str}, target={entry['target']}, op={entry['operator']})"
+        )
+        for combo, combo_result in entry["combos"].items():
+            combo_value = "N/A" if combo_result["value"] is None else f"{combo_result['value']:.4f}"
+            combo_passed = "PASS" if combo_result["passed"] else "FAIL"
+            print(f"    {combo}: {combo_passed} (value={combo_value})")
+    return 0 if all_ok else 1
+
+
+def _baseline_save(args) -> int:
+    df = pd.read_csv(args.data)
+    baselines = save_baselines(df, args.output)
+    print(
+        f"kasoku baseline: saved {len(baselines)} cell(s) to {args.output}"
+    )
+    return 0
+
+
+def _baseline_compare(args) -> int:
+    config = _load_config(args)
+    df = pd.read_csv(args.data)
+    baselines = load_baselines(args.baseline)
+    results = compare_baselines(df, baselines, config.baseline)
+
+    status = "PASS" if results["passed"] else "FAIL"
+    print(f"kasoku baseline: {status}")
+    if results["missing_baselines"]:
+        print("  no baseline stored for (compared as PASS):")
+        for key in results["missing_baselines"]:
+            print(f"    {key}")
+
+    any_regression = False
+    for key, cell_metrics in results["cells"].items():
+        if not cell_metrics:
+            continue
+        for metric, entry in cell_metrics.items():
+            current = entry["current"]
+            baseline_value = entry["baseline"]
+            pct_change = entry["pct_change"]
+            threshold = entry["threshold"]
+            regression = entry["regression"]
+            current_str = "N/A" if current is None else f"{current:.4f}"
+            baseline_str = "N/A" if baseline_value is None else f"{baseline_value:.4f}"
+            pct_str = "N/A" if pct_change is None else f"{pct_change:+.2f}%"
+            passed_str = "PASS" if regression is False else ("FAIL" if regression is True else "SKIP")
+            print(
+                f"  {key}/{metric}: {passed_str} "
+                f"(current={current_str}, baseline={baseline_str}, "
+                f"change={pct_str}, threshold={threshold}%)"
+            )
+            if regression is True:
+                any_regression = True
+
+    return 1 if any_regression else 0
+
+
+def _baseline_list(args) -> int:
+    baselines = load_baselines(args.baseline)
+    if not baselines:
+        print("kasoku baseline: no baselines stored")
+        return 0
+    print("kasoku baseline: stored cells")
+    for key in sorted(baselines):
+        entry = baselines[key]
+        parts = ", ".join(f"{k}={v:.4f}" for k, v in sorted(entry.items()))
+        print(f"  {key}: {parts}")
+    return 0
+
+
+def _accuracy_check(args) -> int:
+    config = _load_config(args)
+    model = load_trained_model(
+        config.training.model,
+        config.training.size,
+        lookback=config.training.window_size,
+        horizon=config.training.horizon,
+        checkpoint_path=args.model,
+        seed=config.training.seed,
+    )
+    df = CsvSource(args.data).read()
+    results = evaluate_accuracy(
+        model,
+        df,
+        args.horizon,
+        args.mode or config.training.mode,
+        config.accuracy,
+    )
+
+    all_ok = results["passed"]
+    status = "PASS" if all_ok else "FAIL"
+    print(f"kasoku accuracy: {status}")
+    for metric_name in ("mae", "mape"):
+        entry = results[metric_name]
+        if not entry["enabled"]:
+            print(f"  {metric_name}: SKIP (disabled)")
+            continue
+        value_str = "N/A" if entry["value"] is None else f"{entry['value']:.4f}"
+        passed_str = "PASS" if entry["passed"] else "FAIL"
+        print(
+            f"  {metric_name}: {passed_str} "
+            f"(value={value_str}, threshold={entry['threshold']:.4f})"
+        )
+        for symbol, value in entry["per_series"].items():
+            print(f"    {symbol}: {value:.4f}")
+    if args.output is not None:
+        save_accuracy_json(results, args.output)
+        print(f"kasoku accuracy: wrote results to {args.output}")
+    return 0 if all_ok else 1
+
+
+def _report_generate(args) -> int:
+    config = _load_config(args)
+    generate_report(
+        args.data,
+        args.output,
+        compare=args.compare,
+        config=config,
+        time_range=args.time_range,
+        accuracy=args.accuracy,
+        compare_accuracy=args.compare_accuracy,
+    )
+    print(f"kasoku report: wrote HTML report to {args.output}")
+    return 0
+
+
+def _report_watch(args) -> int:
+    config = _load_config(args)
+    from kasoku.report.watcher import watch_and_regenerate
+
+    watch_and_regenerate(
+        args.data,
+        args.output,
+        compare_path=args.compare,
+        config=config,
+        time_range=args.time_range,
+        interval=args.interval,
     )
     return 0
