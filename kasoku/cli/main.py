@@ -16,7 +16,7 @@ from typing import Sequence
 import pandas as pd
 
 from kasoku.alerts import AlertsError, render_alerts_yaml
-from kasoku.accuracy import AccuracyError, evaluate_accuracy
+from kasoku.accuracy import AccuracyError, evaluate_accuracy, save_accuracy_json
 from kasoku.baseline import (
     BaselineError,
     compare_baselines,
@@ -215,6 +215,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--mode", default=None, help="execution mode (eager|tf_function|xla); default from config"
     )
     accuracy_check.add_argument("--config", default=None, help="path to config.toml")
+    accuracy_check.add_argument(
+        "--output",
+        default=None,
+        help="write accuracy results JSON to this path for use with 'kasoku report generate --accuracy'",
+    )
 
     report = subparsers.add_parser("report", help="generate interactive HTML benchmark reports")
     report_sub = report.add_subparsers(dest="report_command", required=True)
@@ -225,6 +230,16 @@ def build_parser() -> argparse.ArgumentParser:
     report_generate.add_argument("--compare", default=None, help="second benchmark file for comparison")
     report_generate.add_argument("--config", default=None, help="path to config.toml")
     report_generate.add_argument("--time-range", default="-24h", help="InfluxDB query time range (default: -24h)")
+    report_generate.add_argument(
+        "--accuracy",
+        default=None,
+        help="accuracy results JSON from 'kasoku accuracy check --output' to render MAE/MAPE charts",
+    )
+    report_generate.add_argument(
+        "--compare-accuracy",
+        default=None,
+        help="second accuracy results JSON for side-by-side accuracy comparison",
+    )
 
     report_watch = report_sub.add_parser("watch", help="watch a benchmark file and regenerate the report on change")
     report_watch.add_argument("--data", required=True, help="benchmark results .csv/.json or InfluxDB URL")
@@ -518,6 +533,9 @@ def _accuracy_check(args) -> int:
         )
         for symbol, value in entry["per_series"].items():
             print(f"    {symbol}: {value:.4f}")
+    if args.output is not None:
+        save_accuracy_json(results, args.output)
+        print(f"kasoku accuracy: wrote results to {args.output}")
     return 0 if all_ok else 1
 
 
@@ -529,6 +547,8 @@ def _report_generate(args) -> int:
         compare=args.compare,
         config=config,
         time_range=args.time_range,
+        accuracy=args.accuracy,
+        compare_accuracy=args.compare_accuracy,
     )
     print(f"kasoku report: wrote HTML report to {args.output}")
     return 0

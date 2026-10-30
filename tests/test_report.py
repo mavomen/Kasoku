@@ -11,11 +11,13 @@ import pandas as pd
 import pytest
 
 from kasoku.report import (
+    ACCURACY_METRICS,
     BENCHMARK_COLUMNS,
     ReportError,
     build_html,
     compute_xla_speedup,
     generate_report,
+    load_accuracy_data,
     load_benchmark_data,
 )
 from kasoku.report.watcher import _current_mtime, _file_changed, _run_polling, watch_and_regenerate
@@ -353,3 +355,69 @@ def test_build_html_escapes_and_injects_speedup():
     html = build_html(frame)
     assert '"speedup": 2.0' in html
     assert "__SPEEDUP_DATA__" not in html  # placeholder replaced
+
+
+ACCURACY_JSON = {
+    "passed": True,
+    "mae": {
+        "value": 1.23,
+        "threshold": 2.0,
+        "passed": True,
+        "enabled": True,
+        "per_series": {"series_a": 1.1, "series_b": 1.4},
+    },
+    "mape": {
+        "value": 0.08,
+        "threshold": 0.15,
+        "passed": True,
+        "enabled": True,
+        "per_series": {"series_a": 0.07, "series_b": 0.11},
+    },
+}
+
+
+def test_load_accuracy_data_from_json(tmp_path):
+    path = tmp_path / "accuracy.json"
+    path.write_text(json.dumps(ACCURACY_JSON), encoding="utf-8")
+    data = load_accuracy_data(str(path))
+    assert data["passed"] is True
+    assert data["mae"]["value"] == 1.23
+    assert data["mae"]["per_series"] == {"series_a": 1.1, "series_b": 1.4}
+
+
+def test_load_accuracy_data_unsupported_source(tmp_path):
+    path = tmp_path / "accuracy.txt"
+    path.write_text("not json", encoding="utf-8")
+    with pytest.raises(ReportError, match="unsupported accuracy source"):
+        load_accuracy_data(str(path))
+
+
+def test_load_accuracy_data_missing_keys(tmp_path):
+    path = tmp_path / "accuracy.json"
+    path.write_text(json.dumps({"passed": True}), encoding="utf-8")
+    with pytest.raises(ReportError, match="missing key"):
+        load_accuracy_data(str(path))
+
+
+def test_build_html_injects_accuracy_placeholders():
+    frame = pd.read_csv(__import__("io").StringIO(BENCHMARK_CSV))
+    html = build_html(frame, accuracy_data=ACCURACY_JSON)
+    assert "__ACCURACY_DATA__" not in html
+    assert "__COMPARE_ACCURACY_DATA__" not in html
+    assert "const ACCURACY_DATA = " in html
+    assert '"passed": true' in html
+
+
+def test_build_html_accuracy_charts_present():
+    frame = pd.read_csv(__import__("io").StringIO(BENCHMARK_CSV))
+    html = build_html(frame, accuracy_data=ACCURACY_JSON)
+    assert 'id="chart-mae"' in html
+    assert 'id="chart-mape"' in html
+    assert 'id="chart-accuracy-summary"' in html
+
+
+def test_build_html_with_compare_accuracy():
+    frame = pd.read_csv(__import__("io").StringIO(BENCHMARK_CSV))
+    html = build_html(frame, accuracy_data=ACCURACY_JSON, compare_accuracy_data=ACCURACY_JSON)
+    assert "const COMPARE_ACCURACY_DATA = " in html
+    assert '"passed": true' in html

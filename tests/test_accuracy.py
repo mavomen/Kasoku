@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -14,6 +16,7 @@ from kasoku.accuracy import (
     compute_mae,
     compute_mape,
     evaluate_accuracy,
+    save_accuracy_json,
 )
 from kasoku.config import AccuracyConfig, ConfigError, parse_config
 
@@ -204,3 +207,55 @@ def test_accuracy_invalid_threshold_raises(threshold):
 def test_accuracy_non_table_section_raises():
     with pytest.raises(ConfigError):
         parse_config({"accuracy": "fast"})
+
+
+def test_save_accuracy_json_writes_schema(tmp_path):
+    results = {
+        "passed": True,
+        "mae": {
+            "value": 1.23,
+            "threshold": 2.0,
+            "passed": True,
+            "enabled": True,
+            "per_series": {"series_a": 1.1, "series_b": 1.4},
+        },
+        "mape": {
+            "value": 0.08,
+            "threshold": 0.15,
+            "passed": True,
+            "enabled": True,
+            "per_series": {"series_a": 0.07, "series_b": 0.11},
+        },
+    }
+    path = tmp_path / "accuracy.json"
+    save_accuracy_json(results, str(path))
+    assert path.exists()
+    written = json.loads(path.read_text(encoding="utf-8"))
+    assert written == results
+    assert written["passed"] is True
+    assert written["mae"]["per_series"]["series_a"] == 1.1
+
+
+def test_save_accuracy_json_none_value(tmp_path):
+    results = {
+        "passed": True,
+        "mae": {
+            "value": None,
+            "threshold": 2.0,
+            "passed": True,
+            "enabled": True,
+            "per_series": {},
+        },
+        "mape": {
+            "value": None,
+            "threshold": 0.15,
+            "passed": True,
+            "enabled": True,
+            "per_series": {},
+        },
+    }
+    path = tmp_path / "accuracy.json"
+    save_accuracy_json(results, path)
+    written = json.loads(path.read_text(encoding="utf-8"))
+    assert written["mae"]["value"] is None
+    assert written["mape"]["value"] is None
