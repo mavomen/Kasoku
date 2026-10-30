@@ -75,3 +75,8 @@ memory_ratio = { enabled = true, pct = 10 }   # xla/eager; higher = regression
 # A model fails the accuracy check when any enabled metric exceeds its threshold.
 mae = { enabled = true, threshold = 2.0 }      # absolute error
 mape = { enabled = true, threshold = 0.15 }    # 15% percentage error
+
+[report]
+# Defaults for `kasoku report generate|watch`.
+time_range = "-24h"        # InfluxDB Flux time range for benchmark queries
+theme = "light"            # chart theme (light | dark); reserved for future use

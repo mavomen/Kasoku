@@ -32,6 +32,7 @@ from kasoku.forecast import ForecastError, forecast_series, load_trained_model
 from kasoku.models import ModelError, build_gru_by_size, build_lstm_by_size, build_tcn_by_size
 from kasoku.observability import PushgatewayError, push_benchmark_metrics
 from kasoku.pipeline import PipelineError, window_series
+from kasoku.report import ReportError, generate_report
 from kasoku.sinks import CsvSink, InfluxDBSink, JsonSink, SinkError
 from kasoku.slo import SLOError, all_passed, evaluate_slo
 from kasoku.train import TrainError, train
@@ -51,6 +52,7 @@ _KNOWN_ERRORS = (
     SLOError,
     BaselineError,
     AccuracyError,
+    ReportError,
     OSError,
 )
 
@@ -90,6 +92,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "accuracy":
             if args.accuracy_command == "check":
                 return _accuracy_check(args)
+        if args.command == "report":
+            if args.report_command == "generate":
+                return _report_generate(args)
+            if args.report_command == "watch":
+                return _report_watch(args)
     except _KNOWN_ERRORS as exc:
         print(f"kasoku: error: {exc}", file=sys.stderr)
         return 1
@@ -208,6 +215,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--mode", default=None, help="execution mode (eager|tf_function|xla); default from config"
     )
     accuracy_check.add_argument("--config", default=None, help="path to config.toml")
+
+    report = subparsers.add_parser("report", help="generate interactive HTML benchmark reports")
+    report_sub = report.add_subparsers(dest="report_command", required=True)
+
+    report_generate = report_sub.add_parser("generate", help="generate a self-contained HTML benchmark report")
+    report_generate.add_argument("--data", required=True, help="benchmark results .csv/.json or InfluxDB URL")
+    report_generate.add_argument("--output", required=True, help="HTML report destination path")
+    report_generate.add_argument("--compare", default=None, help="second benchmark file for comparison")
+    report_generate.add_argument("--config", default=None, help="path to config.toml")
+    report_generate.add_argument("--time-range", default="-24h", help="InfluxDB query time range (default: -24h)")
+
+    report_watch = report_sub.add_parser("watch", help="watch a benchmark file and regenerate the report on change")
+    report_watch.add_argument("--data", required=True, help="benchmark results .csv/.json or InfluxDB URL")
+    report_watch.add_argument("--output", required=True, help="HTML report destination path")
+    report_watch.add_argument("--compare", default=None, help="second benchmark file for comparison")
+    report_watch.add_argument("--config", default=None, help="path to config.toml")
+    report_watch.add_argument("--time-range", default="-24h", help="InfluxDB query time range (default: -24h)")
+    report_watch.add_argument("--interval", type=int, default=5, help="poll interval seconds (default: 5)")
 
     return parser
 
@@ -494,3 +519,31 @@ def _accuracy_check(args) -> int:
         for symbol, value in entry["per_series"].items():
             print(f"    {symbol}: {value:.4f}")
     return 0 if all_ok else 1
+
+
+def _report_generate(args) -> int:
+    config = _load_config(args)
+    generate_report(
+        args.data,
+        args.output,
+        compare=args.compare,
+        config=config,
+        time_range=args.time_range,
+    )
+    print(f"kasoku report: wrote HTML report to {args.output}")
+    return 0
+
+
+def _report_watch(args) -> int:
+    config = _load_config(args)
+    from kasoku.report.watcher import watch_and_regenerate
+
+    watch_and_regenerate(
+        args.data,
+        args.output,
+        compare_path=args.compare,
+        config=config,
+        time_range=args.time_range,
+        interval=args.interval,
+    )
+    return 0
