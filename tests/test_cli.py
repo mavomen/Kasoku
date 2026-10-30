@@ -499,3 +499,50 @@ def test_main_accuracy_unknown_subcommand_raises_system_exit():
     with pytest.raises(SystemExit):
         main(["accuracy", "bogus"])
 
+
+_REPORT_CSV = (
+    "run_id,model,model_size,mode,phase,wall_clock_seconds,throughput_samples_per_sec,compile_overhead_seconds,peak_memory_mb\n"
+    "run-1,gru,small,eager,inference,2.0,10.0,,100.0\n"
+    "run-1,gru,small,xla,inference,1.0,20.0,0.2,105.0\n"
+)
+
+
+def test_main_report_generate_writes_html(tmp_path, capsys):
+    bench_csv = tmp_path / "bench.csv"
+    bench_csv.write_text(_REPORT_CSV, encoding="utf-8")
+    output = tmp_path / "report.html"
+    assert main(["report", "generate", "--data", str(bench_csv), "--output", str(output)]) == 0
+    assert output.exists()
+    content = output.read_text(encoding="utf-8")
+    assert "<!DOCTYPE html>" in content
+    assert 'id="chart-speedup"' in content
+    assert 'id="chart-compile"' in content
+    assert 'id="chart-throughput"' in content
+    assert 'id="chart-memory"' in content
+    assert "cdn.jsdelivr.net/npm/chart.js@4" in content
+    out = capsys.readouterr().out
+    assert "kasoku report: wrote HTML report" in out
+
+
+def test_main_report_generate_with_compare(tmp_path):
+    bench_csv = tmp_path / "bench.csv"
+    bench_csv.write_text(_REPORT_CSV, encoding="utf-8")
+    compare_csv = tmp_path / "compare.csv"
+    compare_csv.write_text(_REPORT_CSV, encoding="utf-8")
+    output = tmp_path / "compare.html"
+    assert main(["report", "generate", "--data", str(bench_csv), "--compare", str(compare_csv), "--output", str(output)]) == 0
+    assert output.exists()
+
+
+def test_main_report_generate_missing_data_returns_one(tmp_path, capsys):
+    output = tmp_path / "report.html"
+    rc = main(["report", "generate", "--data", str(tmp_path / "missing.csv"), "--output", str(output)])
+    assert rc == 1
+    assert "error" in capsys.readouterr().err
+
+
+def test_main_report_unknown_subcommand_raises_system_exit():
+    with pytest.raises(SystemExit):
+        main(["report", "bogus"])
+
+
