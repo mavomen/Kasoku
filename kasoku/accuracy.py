@@ -9,8 +9,10 @@ against configurable thresholds.
 
 from __future__ import annotations
 
+import json
 import warnings
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -170,6 +172,17 @@ def evaluate_accuracy(
     return results
 
 
+def save_accuracy_json(results: dict[str, dict], path: str | Path) -> None:
+    """Serialize accuracy ``results`` (from :func:`evaluate_accuracy`) to JSON.
+
+    Writes the exact dict returned by :func:`evaluate_accuracy` so it can be
+    consumed later by :func:`kasoku.report.data.load_accuracy_data` and
+    rendered in the accuracy report dashboard.
+    """
+    output_path = Path(path)
+    output_path.write_text(json.dumps(results, indent=2, default=str), encoding="utf-8")
+
+
 __all__ = [
     "AccuracyError",
     "AccuracyResult",
@@ -177,4 +190,5 @@ __all__ = [
     "compute_mae",
     "compute_mape",
     "evaluate_accuracy",
+    "save_accuracy_json",
 ]

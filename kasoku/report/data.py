@@ -4,9 +4,15 @@ Input sources mirror the benchmark output schema (see
 :data:`kasoku.benchmark.runner.BENCHMARK_COLUMNS`). CSV and JSON are the
 default sinks; InfluxDB is optional and read lazily so
 ``influxdb-client`` is never a hard dependency.
+
+Also loads forecast accuracy JSON (written by ``kasoku accuracy check
+--output``) for use in the accuracy report dashboard.
 """
 
 from __future__ import annotations
+
+import json
+import os
 
 import pandas as pd
 
@@ -24,6 +30,9 @@ BENCHMARK_COLUMNS = [
     "compile_overhead_seconds",
     "peak_memory_mb",
 ]
+
+ACCURACY_METRICS = ("mae", "mape")
+ACCURACY_METRIC_KEYS = ("value", "threshold", "passed", "enabled", "per_series")
 
 
 def load_benchmark_data(
@@ -55,6 +64,55 @@ def load_benchmark_data(
         raise ReportError(f"unsupported report source: {source!r}")
     _validate_columns(frame)
     return frame
+
+
+def load_accuracy_data(source: str) -> dict:
+    """Load and validate accuracy results JSON written by ``accuracy check --output``.
+
+    Args:
+        source: Path to a ``.json`` file produced by ``kasoku accuracy check --output``.
+
+    Returns:
+        The parsed accuracy dict with ``passed``, ``mae``, and ``mape`` keys,
+        each metric containing ``value``, ``threshold``, ``passed``, ``enabled``,
+        and ``per_series``.
+
+    Raises:
+        ReportError: if the source is not a ``.json`` file, cannot be read, or
+            does not match the expected accuracy schema.
+    """
+    if not source.endswith(".json"):
+        raise ReportError(f"unsupported accuracy source: {source!r} (expected a .json file)")
+    try:
+        with open(source, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ReportError(f"cannot read accuracy data from {source!r}: {exc}") from exc
+    _validate_accuracy_schema(data, source)
+    return data
+
+
+def _validate_accuracy_schema(data: dict, source: str) -> None:
+    if not isinstance(data, dict):
+        raise ReportError(f"accuracy data from {source!r} must be a JSON object")
+    for key in ("passed", *ACCURACY_METRICS):
+        if key not in data:
+            raise ReportError(f"accuracy data from {source!r} missing key: {key}")
+    if not isinstance(data["passed"], bool):
+        raise ReportError(f"accuracy data from {source!r}: 'passed' must be a boolean")
+    for metric in ACCURACY_METRICS:
+        entry = data[metric]
+        if not isinstance(entry, dict):
+            raise ReportError(f"accuracy data from {source!r}: '{metric}' must be an object")
+        for metric_key in ACCURACY_METRIC_KEYS:
+            if metric_key not in entry:
+                raise ReportError(
+                    f"accuracy data from {source!r}: '{metric}' missing key: {metric_key}"
+                )
+        if not isinstance(entry["per_series"], dict):
+            raise ReportError(
+                f"accuracy data from {source!r}: '{metric}.per_series' must be an object"
+            )
 
 
 def _validate_columns(frame: pd.DataFrame) -> None:

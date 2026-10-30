@@ -495,6 +495,42 @@ def test_main_accuracy_check_missing_args_raises_system_exit():
         main(["accuracy", "check"])
 
 
+def test_main_accuracy_check_writes_output_json(tmp_path):
+    checkpoint = _train_and_checkpoint(tmp_path)
+    config = _accuracy_config(
+        tmp_path,
+        """
+[accuracy]
+mae = { enabled = true, threshold = 1000.0 }
+mape = { enabled = false }
+""",
+    )
+    output = tmp_path / "accuracy.json"
+    assert (
+        main(
+            [
+                "accuracy",
+                "check",
+                "--model",
+                str(checkpoint),
+                "--data",
+                str(SINGLE),
+                "--horizon",
+                "24",
+                "--config",
+                config,
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    assert output.exists()
+    data = json.loads(output.read_text(encoding="utf-8"))
+    assert "mae" in data and "mape" in data
+    assert "per_series" in data["mae"]
+
+
 def test_main_accuracy_unknown_subcommand_raises_system_exit():
     with pytest.raises(SystemExit):
         main(["accuracy", "bogus"])
@@ -532,6 +568,127 @@ def test_main_report_generate_with_compare(tmp_path):
     output = tmp_path / "compare.html"
     assert main(["report", "generate", "--data", str(bench_csv), "--compare", str(compare_csv), "--output", str(output)]) == 0
     assert output.exists()
+
+
+def test_main_report_generate_with_accuracy(tmp_path):
+    bench_csv = tmp_path / "bench.csv"
+    bench_csv.write_text(_REPORT_CSV, encoding="utf-8")
+    accuracy_json = tmp_path / "accuracy.json"
+    accuracy_json.write_text(
+        json.dumps(
+            {
+                "passed": True,
+                "mae": {
+                    "value": 1.0,
+                    "threshold": 2.0,
+                    "passed": True,
+                    "enabled": True,
+                    "per_series": {"s1": 1.0},
+                },
+                "mape": {
+                    "value": 0.05,
+                    "threshold": 0.15,
+                    "passed": True,
+                    "enabled": True,
+                    "per_series": {"s1": 0.05},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "report.html"
+    assert (
+        main(
+            [
+                "report",
+                "generate",
+                "--data",
+                str(bench_csv),
+                "--accuracy",
+                str(accuracy_json),
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    assert output.exists()
+    content = output.read_text(encoding="utf-8")
+    assert 'id="chart-mae"' in content
+    assert 'id="chart-mape"' in content
+    assert 'id="chart-accuracy-summary"' in content
+
+
+def test_main_report_generate_with_compare_accuracy(tmp_path):
+    bench_csv = tmp_path / "bench.csv"
+    bench_csv.write_text(_REPORT_CSV, encoding="utf-8")
+    accuracy_json = tmp_path / "accuracy.json"
+    accuracy_json.write_text(
+        json.dumps(
+            {
+                "passed": True,
+                "mae": {
+                    "value": 1.0,
+                    "threshold": 2.0,
+                    "passed": True,
+                    "enabled": True,
+                    "per_series": {"s1": 1.0},
+                },
+                "mape": {
+                    "value": 0.05,
+                    "threshold": 0.15,
+                    "passed": True,
+                    "enabled": True,
+                    "per_series": {"s1": 0.05},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    compare_accuracy_json = tmp_path / "compare_accuracy.json"
+    compare_accuracy_json.write_text(
+        json.dumps(
+            {
+                "passed": True,
+                "mae": {
+                    "value": 1.5,
+                    "threshold": 2.0,
+                    "passed": True,
+                    "enabled": True,
+                    "per_series": {"s1": 1.5},
+                },
+                "mape": {
+                    "value": 0.1,
+                    "threshold": 0.15,
+                    "passed": True,
+                    "enabled": True,
+                    "per_series": {"s1": 0.1},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "compare.html"
+    assert (
+        main(
+            [
+                "report",
+                "generate",
+                "--data",
+                str(bench_csv),
+                "--accuracy",
+                str(accuracy_json),
+                "--compare-accuracy",
+                str(compare_accuracy_json),
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    assert output.exists()
+    content = output.read_text(encoding="utf-8")
+    assert "const COMPARE_ACCURACY_DATA = " in content
 
 
 def test_main_report_generate_missing_data_returns_one(tmp_path, capsys):

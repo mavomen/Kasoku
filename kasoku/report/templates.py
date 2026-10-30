@@ -19,7 +19,8 @@ REPORT_TEMPLATE = r"""<!DOCTYPE html>
 <script src="https://unpkg.com/htmx.org@1.9.10"></script>
 <style>
   :root { --bg: #ffffff; --panel: #f7f7f7; --text: #111827; --muted: #6b7280;
-          --bar: #2563eb; --bar2: #93c5fd; --border: #e5e7eb; }
+          --bar: #2563eb; --bar2: #93c5fd; --border: #e5e7eb;
+          --acc-pass: #059669; --acc-fail: #dc2626; --acc-threshold: #6b7280; }
   body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
          margin: 0; padding: 24px; color: var(--text); background: var(--bg); }
   h1 { font-size: 1.5rem; margin: 0 0 16px; }
@@ -76,13 +77,29 @@ REPORT_TEMPLATE = r"""<!DOCTYPE html>
     <h2>Peak Memory (MB) <span class="compare-badge" id="memory-badge"></span></h2>
     <canvas id="chart-memory"></canvas>
   </div>
+  <div class="panel">
+    <h2>MAE per Series <span class="compare-badge" id="mae-badge"></span></h2>
+    <canvas id="chart-mae"></canvas>
+  </div>
+  <div class="panel">
+    <h2>MAPE per Series <span class="compare-badge" id="mape-badge"></span></h2>
+    <canvas id="chart-mape"></canvas>
+  </div>
+  <div class="panel">
+    <h2>Accuracy Summary <span class="compare-badge" id="accuracy-badge"></span></h2>
+    <canvas id="chart-accuracy-summary"></canvas>
+    <div id="accuracy-badge-text" style="margin-top:8px; font-weight:600;"></div>
+  </div>
   <div class="panel empty" id="empty-state" style="display:none">No data matches the current filters.</div>
 </div>
 <script>
 const BENCHMARK_DATA = __BENCHMARK_DATA__;
 const COMPARE_DATA = __COMPARE_DATA__;
 const SPEEDUP_DATA = __SPEEDUP_DATA__;
+const ACCURACY_DATA = __ACCURACY_DATA__;
+const COMPARE_ACCURACY_DATA = __COMPARE_ACCURACY_DATA__;
 const HAS_COMPARE = Array.isArray(COMPARE_DATA) && COMPARE_DATA.length > 0;
+const HAS_COMPARE_ACCURACY = !!(COMPARE_ACCURACY_DATA && COMPARE_ACCURACY_DATA.passed);
 const CHART_COLORS = { eager: "#2563eb", tf_function: "#7c3aed", xla: "#059669" };
 const charts = {};
 const filterState = { model: "all", size: "all", mode: "all", phase: "all", metric: "all" };
@@ -222,6 +239,154 @@ function drawMetricChart(canvasId, valueKey, title) {
   });
 }
 
+function accColor(entry, series) {
+  const value = (entry.per_series || {})[series];
+  if (value == null) return "#9ca3af";
+  return value <= entry.threshold ? "#059669" : "#dc2626";
+}
+
+function accThresholdLine(threshold, count) {
+  return {
+    label: "threshold",
+    data: Array(count).fill(threshold),
+    type: "line",
+    borderColor: "#6b7280",
+    borderWidth: 1,
+    borderDash: [4, 4],
+    pointRadius: 0,
+    fill: false,
+    showLine: true,
+  };
+}
+
+function drawAccuracyChart(canvasId, metric, title) {
+  const entry = ACCURACY_DATA[metric];
+  const canvas = document.getElementById(canvasId);
+  const badge = document.getElementById(canvasId.replace("chart-", "") + "-badge");
+  if (!entry || !entry.enabled) {
+    canvas.style.display = "none";
+    if (badge) badge.textContent = "";
+    return;
+  }
+  canvas.style.display = "block";
+  if (badge) badge.textContent = entry.passed ? "PASS" : "FAIL";
+  const series = entry.per_series || {};
+  const labels = Object.keys(series);
+  const values = labels.map(s => series[s]);
+  const colors = labels.map(s => accColor(entry, s));
+  const datasets = [
+    { label: title, data: values, backgroundColor: colors, borderWidth: 0.5, borderColor: "#ffffff" },
+    accThresholdLine(entry.threshold, labels.length),
+  ];
+  if (HAS_COMPARE_ACCURACY) {
+    const compareEntry = COMPARE_ACCURACY_DATA[metric];
+    const compareSeries = (compareEntry && compareEntry.per_series) || {};
+    const compareValues = labels.map(s => {
+      const v = compareSeries[s];
+      return v == null ? null : v;
+    });
+    datasets.push({
+      label: title + " (compare)",
+      data: compareValues,
+      backgroundColor: "#9ca3af",
+      borderWidth: 0.5,
+      borderColor: "#ffffff",
+    });
+  }
+  destroyCharts();
+  newChart(canvasId, "bar", {
+    labels,
+    datasets,
+  }, {
+    responsive: true, maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        mode: "index", intersect: false,
+        callbacks: {
+          afterBody: items => {
+            const lines = [];
+            for (const item of items) {
+              const dataset = item.dataset;
+              if (dataset.label === "threshold") continue;
+              const series = labels[item.dataIndex];
+              const main = entry.per_series ? entry.per_series[series] : null;
+              let text = `${series}: ${main == null ? "N/A" : main.toFixed(4)}`;
+              if (dataset.label && dataset.label.endsWith(" (compare)")) {
+                const cmp = COMPARE_ACCURACY_DATA[metric]?.per_series?.[series];
+                text += ` (compare: ${cmp == null ? "N/A" : cmp.toFixed(4)})`;
+                if (main != null && cmp != null) {
+                  text += `, diff: ${(cmp - main).toFixed(4)}`;
+                }
+              } else if (main != null) {
+                text += ` (threshold: ${entry.threshold.toFixed(4)})`;
+              }
+              lines.push(text);
+            }
+            return lines;
+          },
+        },
+      },
+    },
+    scales: { y: { beginAtZero: true, title: { display: true, text: title } } },
+  });
+}
+
+function drawAccuracySummary() {
+  const canvas = document.getElementById("chart-accuracy-summary");
+  const badgeText = document.getElementById("accuracy-badge-text");
+  const badge = document.getElementById("accuracy-badge");
+  if (!ACCURACY_DATA.passed) {
+    canvas.style.display = "none";
+    badgeText.textContent = "";
+    if (badge) badge.textContent = "";
+    return;
+  }
+  canvas.style.display = "block";
+  const overallPassed = ACCURACY_DATA.passed === true || ACCURACY_DATA.passed === "true";
+  if (badge) badge.textContent = overallPassed ? "PASS" : "FAIL";
+  badge.style.color = overallPassed ? "#059669" : "#dc2626";
+  const metrics = ["mae", "mape"];
+  const labels = metrics.map(m => m.toUpperCase());
+  const values = metrics.map(m => {
+    const entry = ACCURACY_DATA[m];
+    return (entry && entry.enabled) ? entry.value : null;
+  });
+  const colors = metrics.map(m => {
+    const entry = ACCURACY_DATA[m];
+    return (!entry || !entry.enabled) ? "#9ca3af" : (entry.passed ? "#059669" : "#dc2626");
+  });
+  badgeText.textContent = `Overall: ${overallPassed ? "PASS" : "FAIL"}  (${metrics.map(m => {
+    const e = ACCURACY_DATA[m];
+    if (!e || !e.enabled) return `${m.toUpperCase()}: disabled`;
+    return `${m.toUpperCase()}: ${e.value == null ? "N/A" : e.value.toFixed(4)} vs threshold ${e.threshold.toFixed(4)} ${e.passed ? "PASS" : "FAIL"}`;
+  }).join("  |  ")})`;
+  destroyCharts();
+  newChart("chart-accuracy-summary", "bar", {
+    labels,
+    datasets: [{ label: "mean value", data: values, backgroundColor: colors, borderWidth: 0.5, borderColor: "#ffffff" }],
+  }, {
+    responsive: true, maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        mode: "index", intersect: false,
+        callbacks: {
+          afterBody: items => {
+            return items.map(item => {
+              const metric = labels[item.dataIndex];
+              const entry = ACCURACY_DATA[metric.toLowerCase()];
+              const value = entry && entry.enabled ? entry.value : null;
+              return `${metric}: value=${value == null ? "N/A" : value.toFixed(4)}, threshold=${entry ? entry.threshold.toFixed(4) : "N/A"}, ${entry && entry.enabled ? (entry.passed ? "PASS" : "FAIL") : "disabled"}`;
+            });
+          },
+        },
+      },
+    },
+    scales: { y: { beginAtZero: true, title: { display: true, text: "mean value" } } },
+  });
+}
+
 function refresh() {
   const rows = filteredRows();
   populateFilters(rows);
@@ -229,6 +394,9 @@ function refresh() {
   drawMetricChart("chart-compile", "compile_overhead", "Compile overhead (s)");
   drawMetricChart("chart-throughput", "throughput_samples_per_sec", "Throughput (samples/sec)");
   drawMetricChart("chart-memory", "peak_memory_mb", "Peak memory (MB)");
+  drawAccuracyChart("chart-mae", "mae", "MAE");
+  drawAccuracyChart("chart-mape", "mape", "MAPE");
+  drawAccuracySummary();
 }
 
 function connectWatch() {
